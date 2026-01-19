@@ -14,6 +14,16 @@ class ShoppingRepository(private val dao: ShoppingDao) {
         return -1
     }
 
+    suspend fun addStore(name: String): Long {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return -1
+        return dao.insertStore(Store(name = trimmed))
+    }
+
+    suspend fun deleteStore(storeId: Long) {
+        dao.deleteStoreById(storeId)
+    }
+
     // --- Store items (per-store list) ---
     fun storeItems(storeId: Long): Flow<List<StoreItemDisplay>> = dao.getStoreItems(storeId)
 
@@ -31,7 +41,7 @@ class ShoppingRepository(private val dao: ShoppingDao) {
                 storeId = storeId,
                 itemId = itemId,
                 aisle = aisle.trim().ifEmpty { null },
-                inCart = false
+                priceOverrideCents = null
             )
         )
     }
@@ -40,20 +50,9 @@ class ShoppingRepository(private val dao: ShoppingDao) {
         dao.deleteStoreItem(row.storeId, row.itemId)
     }
 
-    suspend fun toggleInCart(row: StoreItemDisplay) {
-        dao.upsertStoreItem(
-            StoreItem(
-                storeId = row.storeId,
-                itemId = row.itemId,
-                aisle = row.aisle,
-                inCart = !row.inCart,
-                createdAt = row.createdAt
-            )
-        )
-    }
-
     // --- Active List (Home) ---
-    fun observeActiveList(): Flow<List<ShoppingDao.ListEntryRow>> = dao.observeListEntries()
+    fun observeActiveListForStore(storeId: Long): Flow<List<ShoppingDao.ListEntryRow>> =
+        dao.observeListEntriesForStore(storeId)
 
     suspend fun addToActiveListByName(name: String) {
         val trimmed = name.trim()
@@ -73,6 +72,11 @@ class ShoppingRepository(private val dao: ShoppingDao) {
         dao.deleteListEntryByItemId(itemId)
     }
 
+    // ✅ INLINE QTY EDIT: persist trip qty override
+    suspend fun setActiveListQty(itemId: Long, qtyToBuy: Double?) {
+        dao.setQtyToBuy(itemId, qtyToBuy)
+    }
+
     // --- Picklist (Items catalog) ---
     fun observeAllItems(): Flow<List<Item>> = dao.observeAllItems()
 
@@ -82,8 +86,88 @@ class ShoppingRepository(private val dao: ShoppingDao) {
         dao.deleteItemById(itemId)
     }
 
-    // --- Backward-compatible wrappers ---
-    fun observeNeedToGet(): Flow<List<ShoppingDao.ListEntryRow>> = observeActiveList()
+    // --- Edit Item support ---
+    suspend fun getItemById(itemId: Long): Item? = dao.getItemById(itemId)
+
+    suspend fun getStoreItemsForItemOnce(itemId: Long): List<StoreItem> =
+        dao.getStoreItemsForItemOnce(itemId)
+
+    /**
+     * Used by ViewModel.saveItem(updated)
+     * (kept simple: insert if new, update if existing)
+     */
+    suspend fun upsertItem(item: Item): Long {
+        return if (item.id == 0L) {
+            val inserted = dao.insertItem(item)
+            if (inserted > 0) inserted
+            else (dao.getItemIdByName(item.name) ?: -1L)
+        } else {
+            dao.updateItem(item)
+            item.id
+        }
+    }
+
+    /**
+     * Multi-store version (checkbox UI):
+     * - checkedStoreIds defines which stores get a StoreItem row.
+     * - aisle/priceOverride are null for now.
+     */
+    suspend fun saveItemAndStoreMappings(
+        item: Item,
+        checkedStoreIds: List<Long>
+    ): Long {
+        val allStoreIds = dao.getStoresOnce().map { it.id }
+
+        val checkedSet = checkedStoreIds.toSet()
+        val uncheckedStoreIds = allStoreIds.filter { it !in checkedSet }
+
+        val checkedStoreItems = checkedStoreIds.distinct().map { storeId ->
+            StoreItem(
+                storeId = storeId,
+                itemId = item.id, // DAO normalizes if item.id == 0
+                aisle = null,
+                priceOverrideCents = null
+            )
+        }
+
+        return dao.saveItemAndStoreMappings(
+            item = item,
+            checkedStoreItems = checkedStoreItems,
+            uncheckedStoreIds = uncheckedStoreIds
+        )
+    }
+
+    /**
+     * Single-store + aisle version (selected store in Edit Item):
+     * - Saves Item defaults
+     * - Upserts ONE StoreItem row for storeId with aisle + price override
+     * - DOES NOT remove mappings for other stores
+     */
+    suspend fun saveItemForStoreWithAisle(
+        item: Item,
+        storeId: Long,
+        aisle: String?,
+        priceOverrideCents: Int? = null
+    ): Long {
+
+        val checkedStoreItems = listOf(
+            StoreItem(
+                storeId = storeId,
+                itemId = item.id,
+                aisle = aisle?.trim()?.ifEmpty { null },
+                priceOverrideCents = priceOverrideCents
+            )
+        )
+
+        return dao.saveItemAndStoreMappings(
+            item = item,
+            checkedStoreItems = checkedStoreItems,
+            uncheckedStoreIds = emptyList()
+        )
+    }
+
+    // --- Backward-compatible wrappers (store-agnostic) ---
+    fun observeNeedToGet(): Flow<List<ShoppingDao.ListEntryRow>> = dao.observeListEntries()
 
     suspend fun addByName(name: String) = addToActiveListByName(name)
 

@@ -7,6 +7,7 @@ import com.reese.shoppinglist.data.Item
 import com.reese.shoppinglist.data.ShoppingDao
 import com.reese.shoppinglist.data.ShoppingRepository
 import com.reese.shoppinglist.data.Store
+import com.reese.shoppinglist.data.StoreItem
 import com.reese.shoppinglist.data.StoreItemDisplay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,20 +19,20 @@ data class ShoppingUiState(
     val stores: List<Store> = emptyList(),
     val selectedStoreId: Long? = null,
 
-    // Existing per-store view (aisle is nullable)
-    val needToGet: Map<String?, List<StoreItemDisplay>> = emptyMap(),
-    val inCart: Map<String?, List<StoreItemDisplay>> = emptyMap(),
-    val needToGetCount: Int = 0,
-    val inCartCount: Int = 0,
-
-    // Active list split into two sections for Home UI
+    // Home list split into two sections
     val needToGetEntries: List<ShoppingDao.ListEntryRow> = emptyList(),
     val inCartEntries: List<ShoppingDao.ListEntryRow> = emptyList(),
     val listEntryCount: Int = 0,
+    val needToGetEntriesByAisle: Map<String, List<ShoppingDao.ListEntryRow>> = emptyMap(),
+    val inCartEntriesByAisle: Map<String, List<ShoppingDao.ListEntryRow>> = emptyMap(),
 
     // Picklist
     val picklistQuery: String = "",
-    val picklistItems: List<Item> = emptyList()
+    val picklistItems: List<Item> = emptyList(),
+
+    // Edit Item
+    val editingItem: Item? = null,
+    val editingStoreItems: List<StoreItem> = emptyList()
 )
 
 class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel() {
@@ -39,9 +40,11 @@ class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel(
     private val _uiState = MutableStateFlow(ShoppingUiState())
     val uiState: StateFlow<ShoppingUiState> = _uiState.asStateFlow()
 
-    private var storeItemsJob: Job? = null
     private var listEntriesJob: Job? = null
     private var picklistJob: Job? = null
+
+    private fun normalizeAisle(raw: String?): String =
+        raw?.trim().takeUnless { it.isNullOrEmpty() } ?: "Unassigned"
 
     init {
         viewModelScope.launch { repository.ensureDefaultStore() }
@@ -55,47 +58,33 @@ class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel(
                     selectedStoreId = selected
                 )
 
-                if (selected != null) startCollectingStoreItems(selected)
+                if (selected != null) {
+                    startCollectingActiveList(selected)
+                }
             }
         }
 
-        startCollectingActiveList()
-        startCollectingPicklist("") // default: all items
+        startCollectingPicklist("")
     }
 
     fun selectStore(storeId: Long) {
         _uiState.value = _uiState.value.copy(selectedStoreId = storeId)
-        startCollectingStoreItems(storeId)
+        startCollectingActiveList(storeId)
     }
 
-    private fun startCollectingStoreItems(storeId: Long) {
-        storeItemsJob?.cancel()
-        storeItemsJob = viewModelScope.launch {
-            repository.storeItems(storeId).collect { rows ->
-                val need = rows.filter { !it.inCart }.groupBy { it.aisle }
-                val cart = rows.filter { it.inCart }.groupBy { it.aisle }
-
-                _uiState.value = _uiState.value.copy(
-                    needToGet = need,
-                    inCart = cart,
-                    needToGetCount = rows.count { !it.inCart },
-                    inCartCount = rows.count { it.inCart }
-                )
-            }
-        }
-    }
-
-    private fun startCollectingActiveList() {
+    private fun startCollectingActiveList(storeId: Long) {
         listEntriesJob?.cancel()
         listEntriesJob = viewModelScope.launch {
-            repository.observeActiveList().collect { rows ->
+            repository.observeActiveListForStore(storeId).collect { rows ->
                 val need = rows.filter { !it.checkedInCart }
                 val cart = rows.filter { it.checkedInCart }
 
                 _uiState.value = _uiState.value.copy(
                     needToGetEntries = need,
                     inCartEntries = cart,
-                    listEntryCount = rows.size
+                    listEntryCount = rows.size,
+                    needToGetEntriesByAisle = need.groupBy { normalizeAisle(it.aisle) },
+                    inCartEntriesByAisle = cart.groupBy { normalizeAisle(it.aisle) }
                 )
             }
         }
@@ -123,33 +112,11 @@ class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel(
     }
 
     fun addFromPicklist(itemId: Long) {
-        viewModelScope.launch {
-            repository.addToActiveListByItemId(itemId)
-        }
+        viewModelScope.launch { repository.addToActiveListByItemId(itemId) }
     }
 
     fun deleteFromPicklist(itemId: Long) {
-        viewModelScope.launch {
-            repository.deleteCatalogItem(itemId)
-        }
-    }
-
-    // --- Store-based (kept) ---
-    fun addItem(name: String, aisle: String) {
-        val storeId = _uiState.value.selectedStoreId ?: return
-        if (storeId == -1L) return
-
-        viewModelScope.launch {
-            repository.addItemToStore(storeId, name, aisle)
-        }
-    }
-
-    fun toggleItemCart(row: StoreItemDisplay) {
-        viewModelScope.launch { repository.toggleInCart(row) }
-    }
-
-    fun deleteItem(row: StoreItemDisplay) {
-        viewModelScope.launch { repository.deleteFromStore(row) }
+        viewModelScope.launch { repository.deleteCatalogItem(itemId) }
     }
 
     // --- Active list (Home) ---
@@ -165,13 +132,53 @@ class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel(
         viewModelScope.launch { repository.removeFromActiveList(itemId) }
     }
 
-    // Backward-compatible (if anything still calls these)
-    fun setNeedToGetChecked(listEntryId: Long, checked: Boolean) {
-        viewModelScope.launch { repository.setChecked(listEntryId, checked) }
+    // ✅ INLINE QTY EDIT (persists)
+    fun setNeedToGetQty(itemId: Long, qtyToBuy: Double?) {
+        viewModelScope.launch { repository.setActiveListQty(itemId, qtyToBuy) }
     }
 
-    fun deleteNeedToGetEntry(listEntryId: Long) {
-        viewModelScope.launch { repository.deleteListEntry(listEntryId) }
+    // --- Edit Item ---
+    fun loadItemForEdit(itemId: Long) {
+        viewModelScope.launch {
+            val item = repository.getItemById(itemId)
+            val storeItems = repository.getStoreItemsForItemOnce(itemId)
+
+            _uiState.value = _uiState.value.copy(
+                editingItem = item,
+                editingStoreItems = storeItems
+            )
+        }
+    }
+
+    fun saveItemForSelectedStore(
+        item: Item,
+        storeId: Long,
+        aisle: String?,
+        priceOverrideCents: Int?
+    ) {
+        viewModelScope.launch {
+            repository.saveItemForStoreWithAisle(item, storeId, aisle, priceOverrideCents)
+        }
+    }
+
+    fun clearEditingItem() {
+        _uiState.value = _uiState.value.copy(editingItem = null)
+    }
+
+    fun saveItem(updated: Item) {
+        viewModelScope.launch {
+            repository.upsertItem(updated)
+            _uiState.value = _uiState.value.copy(editingItem = updated)
+        }
+    }
+
+    // --- Stores management ---
+    fun addStore(name: String) {
+        viewModelScope.launch { repository.addStore(name) }
+    }
+
+    fun deleteStore(storeId: Long) {
+        viewModelScope.launch { repository.deleteStore(storeId) }
     }
 }
 

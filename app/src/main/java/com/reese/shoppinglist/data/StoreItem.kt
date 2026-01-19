@@ -32,6 +32,9 @@ data class StoreItem(
 
     val aisle: String? = null,
 
-    val inCart: Boolean = false,
-    val createdAt: Long = System.currentTimeMillis()
+    // Per-store override (optional)
+    val priceOverrideCents: Int? = null,
+
+    val createdAtEpochMs: Long = System.currentTimeMillis(),
+    val updatedAtEpochMs: Long = System.currentTimeMillis()
 )
