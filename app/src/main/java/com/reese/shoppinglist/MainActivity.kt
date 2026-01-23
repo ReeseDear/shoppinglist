@@ -2,6 +2,7 @@ package com.reese.shoppinglist
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -44,27 +45,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.reese.shoppinglist.data.Item
 import com.reese.shoppinglist.data.ShoppingDatabase
 import com.reese.shoppinglist.data.ShoppingRepository
 import com.reese.shoppinglist.data.Store
-import com.reese.shoppinglist.data.StoreItem
 import com.reese.shoppinglist.ui.ShoppingViewModel
 import com.reese.shoppinglist.ui.ShoppingViewModelFactory
 import com.reese.shoppinglist.ui.theme.ShoppingListTheme
 import java.util.Locale
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.TextRange
-
-
 
 class MainActivity : ComponentActivity() {
 
@@ -91,47 +88,76 @@ class MainActivity : ComponentActivity() {
 
 private enum class Screen { HOME, PICKLIST, EDIT_ITEM, STORES }
 
+private data class Route(
+    val screen: Screen,
+    val editItemId: Long? = null
+)
+
 @Composable
 fun AppRoot(viewModel: ShoppingViewModel) {
-    var screen by remember { mutableStateOf(Screen.HOME) }
-    var editItemId by remember { mutableStateOf<Long?>(null) }
+    // Simple navigation stack
+    var backStack by remember {
+        mutableStateOf(listOf(Route(Screen.HOME)))
+    }
 
-    when (screen) {
-        Screen.HOME -> {
-            ShoppingListScreen(
-                viewModel = viewModel,
-                onOpenPicklist = { screen = Screen.PICKLIST },
-                onOpenEditItem = { itemId ->
-                    editItemId = itemId
-                    screen = Screen.EDIT_ITEM
+    fun currentRoute(): Route = backStack.last()
+
+    fun push(route: Route) {
+        backStack = backStack + route
+    }
+
+    fun pop(): Boolean {
+        if (backStack.size <= 1) return false
+
+        val leaving = backStack.last()
+        backStack = backStack.dropLast(1)
+
+        // Cleanup when leaving Edit screen
+        if (leaving.screen == Screen.EDIT_ITEM) {
+            viewModel.clearEditingItem()
+        }
+        return true
+    }
+
+    // ✅ Phone back button: go to previous screen instead of closing the app
+    BackHandler(enabled = backStack.size > 1) {
+        pop()
+    }
+
+    when (val route = currentRoute()) {
+        is Route -> {
+            when (route.screen) {
+                Screen.HOME -> {
+                    ShoppingListScreen(
+                        viewModel = viewModel,
+                        onOpenPicklist = { push(Route(Screen.PICKLIST)) },
+                        onOpenEditItem = { itemId -> push(Route(Screen.EDIT_ITEM, editItemId = itemId)) }
+                    )
                 }
-            )
-        }
 
-        Screen.PICKLIST -> {
-            PicklistScreen(
-                viewModel = viewModel,
-                onDone = { screen = Screen.HOME },
-                onOpenStores = { screen = Screen.STORES }
-            )
-        }
-
-        Screen.STORES -> {
-            StoresScreen(
-                viewModel = viewModel,
-                onDone = { screen = Screen.PICKLIST }
-            )
-        }
-
-        Screen.EDIT_ITEM -> {
-            EditItemScreen(
-                viewModel = viewModel,
-                itemId = editItemId,
-                onBack = {
-                    viewModel.clearEditingItem()
-                    screen = Screen.HOME
+                Screen.PICKLIST -> {
+                    PicklistScreen(
+                        viewModel = viewModel,
+                        onDone = { pop() },
+                        onOpenStores = { push(Route(Screen.STORES)) }
+                    )
                 }
-            )
+
+                Screen.STORES -> {
+                    StoresScreen(
+                        viewModel = viewModel,
+                        onDone = { pop() }
+                    )
+                }
+
+                Screen.EDIT_ITEM -> {
+                    EditItemScreen(
+                        viewModel = viewModel,
+                        itemId = route.editItemId,
+                        onBack = { pop() }
+                    )
+                }
+            }
         }
     }
 }
@@ -396,9 +422,8 @@ fun ActiveListRow(
 
     var qtyField by remember(qtyValue) {
         val s = if (qtyValue % 1.0 == 0.0) qtyValue.toInt().toString() else qtyValue.toString()
-        mutableStateOf(TextFieldValue(s, selection = TextRange(0, s.length))) // ✅ selected
+        mutableStateOf(TextFieldValue(s, selection = TextRange(0, s.length))) // selected
     }
-
 
     fun commitQty() {
         val trimmed = qtyField.text.trim()
@@ -410,7 +435,6 @@ fun ActiveListRow(
         }
         editingQty = false
     }
-
 
     Row(
         modifier = Modifier
@@ -458,7 +482,6 @@ fun ActiveListRow(
             } else {
                 LaunchedEffect(editingQty) {
                     if (editingQty) {
-                        // ✅ focus + keep all selected
                         focusRequester.requestFocus()
                         qtyField = qtyField.copy(selection = TextRange(0, qtyField.text.length))
                     }
@@ -472,14 +495,13 @@ fun ActiveListRow(
                         .width(86.dp)
                         .focusRequester(focusRequester),
                     keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Decimal, // ✅ 10-key
+                        keyboardType = KeyboardType.Decimal,
                         imeAction = ImeAction.Done
                     ),
                     keyboardActions = KeyboardActions(
                         onDone = { commitQty() }
                     )
                 )
-
 
                 TextButton(onClick = { commitQty() }) { Text("OK") }
             }
@@ -530,7 +552,7 @@ fun ActiveListRow(
     }
 }
 
-/* ---------- Picklist / Stores / EditItem below unchanged EXCEPT save call ---------- */
+/* ---------- Picklist / Stores / EditItem below unchanged (except store pricing added) ---------- */
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -567,6 +589,16 @@ fun PicklistScreen(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = uiState.picklistShowAll,
+                    onCheckedChange = { viewModel.setPicklistShowAll(it) }
+                )
+                Text("Show all stores")
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -574,8 +606,10 @@ fun PicklistScreen(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(uiState.picklistItems.size) { index ->
-                    val item: Item = uiState.picklistItems[index]
+                items(
+                    items = uiState.picklistItems,
+                    key = { it.id }
+                ) { item ->
                     PicklistRow(
                         name = item.name,
                         onTap = { viewModel.addFromPicklist(item.id) },
@@ -683,7 +717,10 @@ fun StoresScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .combinedClickable(
-                                onClick = { /* no-op */ },
+                                onClick = {
+                                    viewModel.selectStore(store.id)
+                                    onDone() // go back immediately after selecting
+                                },
                                 onLongClick = { confirmDelete = store }
                             ),
                         colors = CardDefaults.cardColors(
@@ -736,12 +773,19 @@ fun EditItemScreen(
 
     var aisle by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
+
+    // Catalog defaults
     var defaultPrice by remember { mutableStateOf("") }
     var defaultQty by remember { mutableStateOf("") }
     var defaultUnit by remember { mutableStateOf("") }
     var defaultSize by remember { mutableStateOf("") }
+
+    // ✅ Store-specific override (selected store)
+    var storePrice by remember { mutableStateOf("") }
+
     var notes by remember { mutableStateOf("") }
     var isActive by remember { mutableStateOf(true) }
+    var showIfAisleUnassigned by remember { mutableStateOf(true) }
 
     LaunchedEffect(item) {
         if (item != null) {
@@ -759,6 +803,8 @@ fun EditItemScreen(
         if (item != null && selectedStoreId != null) {
             val si = uiState.editingStoreItems.firstOrNull { it.storeId == selectedStoreId }
             aisle = si?.aisle ?: ""
+            storePrice = si?.priceOverrideCents?.let { (it / 100.0).toString() } ?: ""
+            showIfAisleUnassigned = si?.showIfAisleUnassigned ?: true
         }
     }
 
@@ -839,11 +885,20 @@ fun EditItemScreen(
                 OutlinedTextField(
                     value = defaultPrice,
                     onValueChange = { defaultPrice = it },
-                    label = { Text("Price") },
+                    label = { Text("Default price") },
                     modifier = Modifier.weight(1f),
                     singleLine = true
                 )
             }
+
+            // ✅ New: store-specific price override for currently selected store
+            OutlinedTextField(
+                value = storePrice,
+                onValueChange = { storePrice = it },
+                label = { Text("Store price (selected store)") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
 
             OutlinedTextField(
                 value = notes,
@@ -852,12 +907,34 @@ fun EditItemScreen(
                 modifier = Modifier.fillMaxWidth()
             )
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = isActive,
-                    onCheckedChange = { isActive = it }
-                )
-                Text("Active", modifier = Modifier.padding(start = 8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = isActive,
+                        onCheckedChange = { isActive = it }
+                    )
+                    Text("Active", modifier = Modifier.padding(start = 8.dp))
+                }
+
+                Spacer(modifier = Modifier.weight(1f))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = showIfAisleUnassigned,
+                        onCheckedChange = { showIfAisleUnassigned = it }
+                    )
+                    Text(
+                        "Show if aisle unassigned",
+                        modifier = Modifier.padding(start = 8.dp)
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
@@ -876,8 +953,14 @@ fun EditItemScreen(
                         val qtyParsed =
                             defaultQty.trim().takeIf { it.isNotEmpty() }?.toDoubleOrNull()
 
-                        val priceCentsParsed =
+                        val defaultPriceCentsParsed =
                             defaultPrice.trim()
+                                .takeIf { it.isNotEmpty() }
+                                ?.toDoubleOrNull()
+                                ?.let { (it * 100).toInt() }
+
+                        val storePriceCentsParsed =
+                            storePrice.trim()
                                 .takeIf { it.isNotEmpty() }
                                 ?.toDoubleOrNull()
                                 ?.let { (it * 100).toInt() }
@@ -887,7 +970,7 @@ fun EditItemScreen(
                             defaultQuantity = qtyParsed,
                             defaultUnit = defaultUnit.trim().ifEmpty { null },
                             defaultSize = defaultSize.trim().ifEmpty { null },
-                            defaultPriceCents = priceCentsParsed,
+                            defaultPriceCents = defaultPriceCentsParsed,
                             notes = notes.trim().ifEmpty { null },
                             isActive = isActive
                         )
@@ -896,7 +979,8 @@ fun EditItemScreen(
                             item = updated,
                             storeId = selectedStoreId!!,
                             aisle = aisle,
-                            priceOverrideCents = priceCentsParsed
+                            showIfAisleUnassigned = showIfAisleUnassigned,
+                            priceOverrideCents = storePriceCentsParsed
                         )
 
                         onBack()
