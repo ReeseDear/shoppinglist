@@ -190,4 +190,14 @@ interface ShoppingDao {
 
     @Query("DELETE FROM list_entries WHERE id = :listEntryId")
     suspend fun deleteListEntry(listEntryId: Long)
+
+    @Query(
+        """
+    SELECT * FROM items
+    WHERE LOWER(name) = LOWER(:name)
+    LIMIT 1
+    """
+    )
+    suspend fun getItemByExactName(name: String): Item?
+
 }

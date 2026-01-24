@@ -86,6 +86,55 @@ class ShoppingRepository(private val dao: ShoppingDao) {
         }
     }
 
+    suspend fun addItemByNameToStoreAndList(
+        name: String,
+        storeId: Long
+    ) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+
+        // 1) Find or create the item
+        val existing = dao.getItemByExactName(trimmed)
+        val itemId = if (existing != null) {
+            existing.id
+        } else {
+            val newId = dao.insertItem(
+                Item(
+                    name = trimmed,
+                    isActive = true
+                )
+            )
+            if (newId > 0) newId else dao.getItemByExactName(trimmed)?.id ?: return
+        }
+
+        // 2) Ensure store mapping exists (this is the KEY for your new filtering)
+        val currentStoreItem = dao.getStoreItem(storeId, itemId)
+        if (currentStoreItem == null) {
+            dao.upsertStoreItem(
+                StoreItem(
+                    storeId = storeId,
+                    itemId = itemId,
+                    aisle = "Unassigned",              // default aisle so it shows
+                    showIfAisleUnassigned = true,      // safe default
+                    priceOverrideCents = null
+                )
+            )
+        }
+
+        // 3) Add to active list if not already there
+        val existingEntry = dao.getListEntryByItemId(itemId)
+        if (existingEntry == null) {
+            dao.upsertListEntry(
+                ListEntry(
+                    itemId = itemId,
+                    checkedInCart = false,
+                    createdAtEpochMs = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+
     suspend fun removeFromActiveList(itemId: Long) {
         dao.deleteListEntryByItemId(itemId)
     }

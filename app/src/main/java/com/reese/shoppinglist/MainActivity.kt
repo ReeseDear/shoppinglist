@@ -139,7 +139,8 @@ fun AppRoot(viewModel: ShoppingViewModel) {
                     PicklistScreen(
                         viewModel = viewModel,
                         onDone = { pop() },
-                        onOpenStores = { push(Route(Screen.STORES)) }
+                        onOpenStores = { push(Route(Screen.STORES)) },
+                        onOpenEditItem = { itemId -> push(Route(Screen.EDIT_ITEM, editItemId = itemId)) }
                     )
                 }
 
@@ -559,7 +560,8 @@ fun ActiveListRow(
 fun PicklistScreen(
     viewModel: ShoppingViewModel,
     onDone: () -> Unit,
-    onOpenStores: () -> Unit
+    onOpenStores: () -> Unit,
+    onOpenEditItem: (Long) -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
@@ -613,7 +615,8 @@ fun PicklistScreen(
                     PicklistRow(
                         name = item.name,
                         onTap = { viewModel.addFromPicklist(item.id) },
-                        onLongPressDelete = { viewModel.deleteFromPicklist(item.id) }
+                        onLongPressDelete = { viewModel.deleteFromPicklist(item.id) },
+                        onEdit = { onOpenEditItem(item.id) }
                     )
                 }
             }
@@ -626,7 +629,8 @@ fun PicklistScreen(
 fun PicklistRow(
     name: String,
     onTap: () -> Unit,
-    onLongPressDelete: () -> Unit
+    onLongPressDelete: () -> Unit,
+    onEdit: () -> Unit
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
 
@@ -651,13 +655,20 @@ fun PicklistRow(
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
-            title = { Text("Delete item") },
-            text = { Text("Permanently delete \"$name\" from the catalog?") },
+            title = { Text(name) },
+            text = { Text("Choose an action") },
             confirmButton = {
-                TextButton(onClick = {
-                    onLongPressDelete()
-                    showDeleteDialog = false
-                }) { Text("Delete") }
+                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    TextButton(onClick = {
+                        showDeleteDialog = false
+                        onEdit()
+                    }) { Text("Edit") }
+
+                    TextButton(onClick = {
+                        onLongPressDelete()
+                        showDeleteDialog = false
+                    }) { Text("Delete") }
+                }
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }

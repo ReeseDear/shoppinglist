@@ -121,9 +121,14 @@ class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel(
     fun addToNeedToGet(name: String) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
-        // Existing app behavior likely creates item then adds to list elsewhere;
-        // leaving as-is since you didn't ask to change this flow in this step.
+
+        val storeId = _uiState.value.selectedStoreId ?: return
+
+        viewModelScope.launch {
+            repository.addItemByNameToStoreAndList(trimmed, storeId)
+        }
     }
+
 
     fun toggleNeedToGetChecked(itemId: Long) {
         viewModelScope.launch { repository.toggleChecked(itemId) }
