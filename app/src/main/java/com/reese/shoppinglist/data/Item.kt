@@ -15,6 +15,7 @@ data class Item(
 
     // Catalog defaults (optional)
     val defaultPriceCents: Int? = null,
+    val taxable: Boolean = true,
     val defaultQuantity: Double? = null,
     val defaultUnit: String? = null,
     val defaultSize: String? = null,

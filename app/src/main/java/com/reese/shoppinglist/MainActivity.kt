@@ -8,6 +8,7 @@ import androidx.activity.viewModels
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,6 +44,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -62,12 +64,14 @@ import com.reese.shoppinglist.ui.ShoppingViewModel
 import com.reese.shoppinglist.ui.ShoppingViewModelFactory
 import com.reese.shoppinglist.ui.theme.ShoppingListTheme
 import java.util.Locale
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: ShoppingViewModel by viewModels {
         val database = ShoppingDatabase.getDatabase(applicationContext)
         val repository = ShoppingRepository(database.shoppingDao())
+        val prefs = com.reese.shoppinglist.data.StorePrefs(applicationContext)
         ShoppingViewModelFactory(repository)
     }
 
@@ -139,10 +143,12 @@ fun AppRoot(viewModel: ShoppingViewModel) {
                     PicklistScreen(
                         viewModel = viewModel,
                         onDone = { pop() },
-                        onOpenStores = { push(Route(Screen.STORES)) },
-                        onOpenEditItem = { itemId -> push(Route(Screen.EDIT_ITEM, editItemId = itemId)) }
+                        onOpenEditItem = { itemId ->
+                            push(Route(Screen.EDIT_ITEM, editItemId = itemId))
+                        }
                     )
                 }
+
 
                 Screen.STORES -> {
                     StoresScreen(
@@ -243,11 +249,31 @@ fun ShoppingListScreen(
 
                     OutlinedTextField(
                         value = itemName,
-                        onValueChange = { itemName = it },
+                        onValueChange = {
+                            itemName = it
+                            viewModel.setAddItemTypeahead(it)
+                        },
                         label = { Text("Add item") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
+
+                    val suggestions = uiState.addItemSuggestions
+                    DropdownMenu(
+                        expanded = suggestions.isNotEmpty() && itemName.trim().length >= 2,
+                        onDismissRequest = { viewModel.setAddItemTypeahead("") },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        suggestions.forEach { s ->
+                            DropdownMenuItem(
+                                text = { Text(s.name) },
+                                onClick = {
+                                    itemName = s.name
+                                    viewModel.setAddItemTypeahead("")
+                                }
+                            )
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -286,10 +312,27 @@ fun ShoppingListScreen(
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 item {
-                    SectionHeader(
-                        title = "Need to get",
-                        count = uiState.needToGetEntries.size
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        SectionHeader(
+                            title = "Need",
+                            count = uiState.needToGetEntries.size,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = uiState.storeSpecificOnly,
+                                onCheckedChange = { viewModel.setStoreSpecificOnly(it) }
+                            )
+                            Text("Store specific only")
+                        }
+                    }
                 }
 
                 val needKeys = sortAisleKeys(needGroups.keys)
@@ -329,11 +372,13 @@ fun ShoppingListScreen(
                 item { Spacer(modifier = Modifier.height(8.dp)) }
 
                 item {
-                    SectionHeader(
-                        title = "In the cart",
-                        count = uiState.inCartEntries.size
+                    InCartHeaderRow(
+                        count = uiState.inCartEntries.size,
+                        inCartEntries = uiState.inCartEntries,
+                        onCheckoutConfirm = { viewModel.checkoutConfirm() }
                     )
                 }
+
 
                 val cartKeys = sortAisleKeys(cartGroups.keys)
                 cartKeys.forEach { aisleName ->
@@ -374,14 +419,99 @@ fun ShoppingListScreen(
 }
 
 @Composable
-fun SectionHeader(title: String, count: Int) {
+fun SectionHeader(
+    title: String,
+    count: Int,
+    modifier: Modifier = Modifier
+) {
     Text(
         text = "$title ($count)",
         fontSize = 20.sp,
         fontWeight = FontWeight.Bold,
-        color = MaterialTheme.colorScheme.primary
+        color = MaterialTheme.colorScheme.primary,
+        modifier = modifier
     )
 }
+
+@Composable
+private fun InCartHeaderRow(
+    count: Int,
+    inCartEntries: List<com.reese.shoppinglist.data.ShoppingDao.ListEntryRow>,
+    onCheckoutConfirm: () -> Unit
+) {
+    var showCheckout by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "In the cart ($count)",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.weight(1f)
+        )
+
+        TextButton(
+            onClick = { if (count > 0) showCheckout = true },
+            enabled = count > 0
+        ) { Text("Checkout") }
+    }
+
+    if (showCheckout) {
+        // Compute totals from rows already in memory
+        var missingPriceCount = 0
+        var totalCents = 0L
+        var taxableCents = 0L
+
+        inCartEntries.forEach { row ->
+            val unitPriceCents =
+                row.priceOverrideCents
+                    ?: row.storePriceOverrideCents
+                    ?: row.defaultPriceCents
+
+            val qty = row.qtyToBuy ?: row.defaultQuantity ?: 1.0
+
+            if (unitPriceCents == null) {
+                missingPriceCount += 1
+            } else {
+                val line = (unitPriceCents.toDouble() * qty).toLong()
+                totalCents += line
+                if (row.taxable) taxableCents += line
+            }
+        }
+
+        fun money(cents: Long): String = "$" + "%.2f".format(cents / 100.0)
+
+        AlertDialog(
+            onDismissRequest = { showCheckout = false },
+            title = { Text("Checkout") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Total (priced items): ${money(totalCents)}")
+                    Text("Taxable subtotal: ${money(taxableCents)}")
+
+                    if (missingPriceCount > 0) {
+                        Text("Unpriced items skipped: $missingPriceCount")
+                    }
+
+                    Text("Confirm will clear only the items that are currently in the cart.")
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onCheckoutConfirm()
+                    showCheckout = false
+                }) { Text("Confirm") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCheckout = false }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
 
 @Composable
 fun AisleHeader(title: String, count: Int) {
@@ -547,7 +677,7 @@ fun ActiveListRow(
                 }) { Text("Remove") }
             },
             dismissButton = {
-                TextButton(onClick = { showRemoveDialog = false }) { Text("Cancel") }
+                TextButton(onClick = {showRemoveDialog = false }) { Text("Cancel") }
             }
         )
     }
@@ -560,19 +690,42 @@ fun ActiveListRow(
 fun PicklistScreen(
     viewModel: ShoppingViewModel,
     onDone: () -> Unit,
-    onOpenStores: () -> Unit,
     onOpenEditItem: (Long) -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
+    var storeMenuOpen by remember { mutableStateOf(false) }
+
+    val selectedStoreName =
+        uiState.stores.firstOrNull { it.id == uiState.selectedStoreId }?.name ?: "No store"
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Picklist") },
+                title = { Text("Picklist — $selectedStoreName") },
                 navigationIcon = {
-                    Row {
-                        TextButton(onClick = onDone) { Text("Done") }
-                        TextButton(onClick = onOpenStores) { Text("Stores") }
+                    TextButton(onClick = onDone) { Text("Done") }
+                },
+                actions = {
+                    // Store switcher
+                    Box {
+                        TextButton(onClick = { storeMenuOpen = true }) {
+                            Text("Store")
+                        }
+                        DropdownMenu(
+                            expanded = storeMenuOpen,
+                            onDismissRequest = { storeMenuOpen = false }
+                        ) {
+                            uiState.stores.forEach { store ->
+                                DropdownMenuItem(
+                                    text = { Text(store.name) },
+                                    onClick = {
+                                        storeMenuOpen = false
+                                        viewModel.selectStore(store.id)   // <-- THIS is the key
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             )
@@ -591,91 +744,109 @@ fun PicklistScreen(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Checkbox(
-                    checked = uiState.picklistShowAll,
-                    onCheckedChange = { viewModel.setPicklistShowAll(it) }
-                )
-                Text("Show all stores")
-            }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(Modifier.height(12.dp))
+
+            val grouped = uiState.picklistRows.groupBy {
+                it.aisle?.trim().takeUnless { it.isNullOrEmpty() } ?: "Unassigned"
+            }
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                items(
-                    items = uiState.picklistItems,
-                    key = { it.id }
-                ) { item ->
-                    PicklistRow(
-                        name = item.name,
-                        onTap = { viewModel.addFromPicklist(item.id) },
-                        onLongPressDelete = { viewModel.deleteFromPicklist(item.id) },
-                        onEdit = { onOpenEditItem(item.id) }
-                    )
+                grouped.forEach { (aisle, rows) ->
+                    item {
+                        Text(
+                            text = aisle,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(vertical = 6.dp)
+                        )
+                    }
+
+                    items(rows.size) { index ->
+                        val row = rows[index]
+                        PicklistRow(
+                            name = row.name,
+                            priceCents = row.storePriceOverrideCents ?: row.defaultPriceCents,
+                            onTap = { viewModel.addFromPicklist(row.itemId) },
+                            onEdit = { onOpenEditItem(row.itemId) },
+                            onDelete = { viewModel.deleteFromPicklist(row.itemId) }
+                        )
+                    }
                 }
             }
         }
     }
 }
 
+
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun PicklistRow(
     name: String,
+    priceCents: Int?,
     onTap: () -> Unit,
-    onLongPressDelete: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
 ) {
-    var showDeleteDialog by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
 
     Card(
         modifier = Modifier
             .fillMaxWidth()
             .combinedClickable(
                 onClick = onTap,
-                onLongClick = { showDeleteDialog = true }
+                onLongClick = { showMenu = true }
             ),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
     ) {
-        Text(
-            text = name,
-            fontSize = 16.sp,
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp)
-        )
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = name,
+                modifier = Modifier.weight(1f)
+            )
+
+            if (priceCents != null) {
+                Text(
+                    text = "$" + "%.2f".format(priceCents / 100.0),
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
     }
 
-    if (showDeleteDialog) {
+    if (showMenu) {
         AlertDialog(
-            onDismissRequest = { showDeleteDialog = false },
+            onDismissRequest = { showMenu = false },
             title = { Text(name) },
-            text = { Text("Choose an action") },
             confirmButton = {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     TextButton(onClick = {
-                        showDeleteDialog = false
+                        showMenu = false
                         onEdit()
                     }) { Text("Edit") }
 
                     TextButton(onClick = {
-                        onLongPressDelete()
-                        showDeleteDialog = false
+                        showMenu = false
+                        onDelete()
                     }) { Text("Delete") }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showMenu = false }) {
+                    Text("Cancel")
+                }
             }
         )
     }
 }
+
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -782,7 +953,11 @@ fun EditItemScreen(
     val item = uiState.editingItem
     val selectedStoreId = uiState.selectedStoreId
 
-    var aisle by remember { mutableStateOf("") }
+    var aisleField by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(""))
+    }
+    var aisleInitialized by remember { mutableStateOf(false) }
+
     var name by remember { mutableStateOf("") }
 
     // Catalog defaults
@@ -810,12 +985,27 @@ fun EditItemScreen(
         }
     }
 
-    LaunchedEffect(item, selectedStoreId, uiState.editingStoreItems) {
+    LaunchedEffect(item?.id, selectedStoreId) {
+        aisleInitialized = false
+    }
+
+    LaunchedEffect(item?.id, selectedStoreId, uiState.editingStoreItems) {
         if (item != null && selectedStoreId != null) {
             val si = uiState.editingStoreItems.firstOrNull { it.storeId == selectedStoreId }
-            aisle = si?.aisle ?: ""
-            storePrice = si?.priceOverrideCents?.let { (it / 100.0).toString() } ?: ""
-            showIfAisleUnassigned = si?.showIfAisleUnassigned ?: true
+            val a = si?.aisle ?: "Unassigned"
+            val sp = si?.priceOverrideCents?.let { (it / 100.0).toString() } ?: ""
+            val show = si?.showIfAisleUnassigned ?: true
+
+            // ✅ initialize ONCE, do NOT keep resetting while typing
+            if (!aisleInitialized) {
+                val sp = si?.priceOverrideCents?.let { (it / 100.0).toString() } ?: ""
+                val show = si?.showIfAisleUnassigned ?: true
+
+                aisleField = TextFieldValue(a, selection = TextRange(0, a.length))
+                storePrice = sp
+                showIfAisleUnassigned = show
+                aisleInitialized = true
+            }
         }
     }
 
@@ -855,12 +1045,37 @@ fun EditItemScreen(
             )
 
             OutlinedTextField(
-                value = aisle,
-                onValueChange = { aisle = it },
+                value = aisleField,
+                onValueChange = {
+                    aisleField = it
+                    viewModel.setAisleTypeahead(selectedStoreId, it.text)
+                },
                 label = { Text("Aisle (selected store)") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
+
+
+            val aisleSugs = uiState.aisleSuggestions
+
+            DropdownMenu(
+                expanded = aisleSugs.isNotEmpty() && aisleField.text.trim().length >= 2,
+                onDismissRequest = { viewModel.setAisleTypeahead(selectedStoreId, "") },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                aisleSugs.forEach { a ->
+                    DropdownMenuItem(
+                        text = { Text(a) },
+                        onClick = {
+                            aisleField = TextFieldValue(
+                                a,
+                                selection = TextRange(a.length, a.length)
+                            )
+                            viewModel.setAisleTypeahead(selectedStoreId, "")
+                        }
+                    )
+                }
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -968,13 +1183,13 @@ fun EditItemScreen(
                             defaultPrice.trim()
                                 .takeIf { it.isNotEmpty() }
                                 ?.toDoubleOrNull()
-                                ?.let { (it * 100).toInt() }
+                                ?.let { (it * 100).roundToInt() }
 
                         val storePriceCentsParsed =
                             storePrice.trim()
                                 .takeIf { it.isNotEmpty() }
                                 ?.toDoubleOrNull()
-                                ?.let { (it * 100).toInt() }
+                                ?.let { (it * 100).roundToInt() }
 
                         val updated = item.copy(
                             name = name.trim(),
@@ -989,7 +1204,8 @@ fun EditItemScreen(
                         viewModel.saveItemForSelectedStore(
                             item = updated,
                             storeId = selectedStoreId!!,
-                            aisle = aisle,
+                            aisle = aisleField.text,
+
                             showIfAisleUnassigned = showIfAisleUnassigned,
                             priceOverrideCents = storePriceCentsParsed
                         )

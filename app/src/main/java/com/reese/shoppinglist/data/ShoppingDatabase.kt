@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [Store::class, Item::class, StoreItem::class, ListEntry::class],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class ShoppingDatabase : RoomDatabase() {
