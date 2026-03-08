@@ -9,6 +9,7 @@ import com.reese.shoppinglist.data.ShoppingRepository
 import com.reese.shoppinglist.data.Store
 import com.reese.shoppinglist.data.StoreItem
 import com.reese.shoppinglist.data.StoreItemDisplay
+import com.reese.shoppinglist.data.StorePrefs
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,7 +44,7 @@ data class ShoppingUiState(
     val storeItems: List<StoreItemDisplay> = emptyList()
 )
 
-class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel() {
+class ShoppingViewModel(private val repository: ShoppingRepository, private val storePrefs: StorePrefs) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ShoppingUiState())
     val uiState: StateFlow<ShoppingUiState> = _uiState.asStateFlow()
@@ -57,8 +58,29 @@ class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel(
     private var aisleSuggestJob: Job? = null
 
     init {
-        startCollectingStores()
+        // 0) Ensure at least one store exists
+        viewModelScope.launch {
+            repository.ensureDefaultStore()
+        }
+
+        // 1) Prefs: load saved store id
+        viewModelScope.launch {
+            storePrefs.selectedStoreId.collect { id ->
+                prefsLoaded = true
+                savedStoreId = id
+                applyStoreSelection(_uiState.value.stores)
+            }
+        }
+
+        // 2) Stores list
+        viewModelScope.launch {
+            repository.stores.collect { stores ->
+                _uiState.value = _uiState.value.copy(stores = stores)
+                applyStoreSelection(stores)
+            }
+        }
     }
+
 
     // ---------- Stores ----------
 
@@ -67,7 +89,13 @@ class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel(
         storesJob = viewModelScope.launch {
             repository.stores.collect { stores ->
                 val currentSelected = _uiState.value.selectedStoreId
-                val selected = currentSelected ?: stores.firstOrNull()?.id
+                val selected =
+                    if (currentSelected != null && stores.any { it.id == currentSelected}) {
+                        currentSelected
+                    }
+                else {
+                    stores.firstOrNull()?.id
+                }
 
                 _uiState.value = _uiState.value.copy(
                     stores = stores,
@@ -85,9 +113,50 @@ class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel(
 
     fun selectStore(storeId: Long) {
         _uiState.value = _uiState.value.copy(selectedStoreId = storeId)
+
+        viewModelScope.launch {
+            storePrefs.setSelectedStoreId(storeId)
+            savedStoreId = storeId
+        }
+
         startCollectingActiveList(storeId)
         startCollectingPicklist(storeId, _uiState.value.picklistQuery)
         startCollectingStoreItems(storeId)
+    }
+
+
+    private var prefsLoaded = false
+    private var savedStoreId: Long? = null
+
+    private fun applyStoreSelection(stores: List<Store>) {
+        val current = _uiState.value.selectedStoreId
+
+        val desired =
+            when {
+                // 1) Prefer saved store if valid
+                savedStoreId != null && stores.any { it.id == savedStoreId } -> savedStoreId
+
+                // 2) Otherwise keep current selection if valid
+                current != null && stores.any { it.id == current } -> current
+
+                // 3) Fallback to first store
+                else -> stores.firstOrNull()?.id
+            }
+
+        if (desired != null && desired != _uiState.value.selectedStoreId) {
+            _uiState.value = _uiState.value.copy(selectedStoreId = desired)
+
+            // restart flows for the newly selected store
+            startCollectingActiveList(desired)
+            startCollectingPicklist(desired, _uiState.value.picklistQuery)
+            startCollectingStoreItems(desired)
+        }
+
+        // If prefs loaded and we had to fallback, persist the fallback so next run is stable
+        if (prefsLoaded && desired != null && desired != savedStoreId) {
+            viewModelScope.launch { storePrefs.setSelectedStoreId(desired) }
+            savedStoreId = desired
+        }
     }
 
     fun addStore(name: String) {
@@ -132,11 +201,23 @@ class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel(
     }
 
     fun addToNeedToGet(name: String) {
-        val storeId = _uiState.value.selectedStoreId ?: return
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
-        viewModelScope.launch {
-            repository.addItemByNameToStoreAndList(trimmed, storeId)
+
+        val storeId = _uiState.value.selectedStoreId
+            ?: _uiState.value.stores.firstOrNull()?.id
+
+        if (storeId != null) {
+            viewModelScope.launch {
+                // 1. Clear suggestions immediately so the UI cleans up
+                _uiState.value = _uiState.value.copy(addItemSuggestions = emptyList())
+
+                // 2. Add to DB and WAIT for it to finish
+                repository.addItemByNameToStoreAndList(trimmed, storeId)
+
+                // 3. Force the collection to restart to see the new item
+                startCollectingActiveList(storeId)
+            }
         }
     }
 
@@ -271,13 +352,12 @@ class ShoppingViewModel(private val repository: ShoppingRepository) : ViewModel(
 }
 
 class ShoppingViewModelFactory(
-    private val repository: ShoppingRepository
+    private val repository: ShoppingRepository,
+    private val storePrefs: StorePrefs
 ) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        if (modelClass.isAssignableFrom(ShoppingViewModel::class.java)) {
-            return ShoppingViewModel(repository) as T
+            return ShoppingViewModel(repository, storePrefs) as T
         }
-        throw IllegalArgumentException("Unknown ViewModel class")
     }
-}
+

@@ -6,6 +6,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +18,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
@@ -49,6 +51,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -60,6 +63,7 @@ import com.reese.shoppinglist.data.Item
 import com.reese.shoppinglist.data.ShoppingDatabase
 import com.reese.shoppinglist.data.ShoppingRepository
 import com.reese.shoppinglist.data.Store
+import com.reese.shoppinglist.data.StorePrefs
 import com.reese.shoppinglist.ui.ShoppingViewModel
 import com.reese.shoppinglist.ui.ShoppingViewModelFactory
 import com.reese.shoppinglist.ui.theme.ShoppingListTheme
@@ -72,7 +76,8 @@ class MainActivity : ComponentActivity() {
         val database = ShoppingDatabase.getDatabase(applicationContext)
         val repository = ShoppingRepository(database.shoppingDao())
         val prefs = com.reese.shoppinglist.data.StorePrefs(applicationContext)
-        ShoppingViewModelFactory(repository)
+        val storePrefs = StorePrefs(applicationContext)
+        ShoppingViewModelFactory(repository, storePrefs)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -135,7 +140,8 @@ fun AppRoot(viewModel: ShoppingViewModel) {
                     ShoppingListScreen(
                         viewModel = viewModel,
                         onOpenPicklist = { push(Route(Screen.PICKLIST)) },
-                        onOpenEditItem = { itemId -> push(Route(Screen.EDIT_ITEM, editItemId = itemId)) }
+                        onOpenEditItem = { itemId -> push(Route(Screen.EDIT_ITEM, editItemId = itemId)) },
+                        onOpenStores = { push(Route(Screen.STORES)) }
                     )
                 }
 
@@ -145,7 +151,8 @@ fun AppRoot(viewModel: ShoppingViewModel) {
                         onDone = { pop() },
                         onOpenEditItem = { itemId ->
                             push(Route(Screen.EDIT_ITEM, editItemId = itemId))
-                        }
+                        },
+                        onOpenStores = { push(Route(Screen.STORES)) }
                     )
                 }
 
@@ -174,10 +181,12 @@ fun AppRoot(viewModel: ShoppingViewModel) {
 fun ShoppingListScreen(
     viewModel: ShoppingViewModel,
     onOpenPicklist: () -> Unit,
-    onOpenEditItem: (Long) -> Unit
+    onOpenEditItem: (Long) -> Unit,
+    onOpenStores: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var itemName by remember { mutableStateOf("") }
+    val keyboardController = LocalSoftwareKeyboardController.current
 
     fun sortAisleKeys(keys: Set<String>): List<String> {
         val unassigned = "Unassigned"
@@ -238,8 +247,8 @@ fun ShoppingListScreen(
                             DropdownMenuItem(
                                 text = { Text(store.name) },
                                 onClick = {
-                                    viewModel.selectStore(store.id)
                                     storeMenuOpen = false
+                                    viewModel.selectStore(store.id)
                                 }
                             )
                         }
@@ -255,7 +264,20 @@ fun ShoppingListScreen(
                         },
                         label = { Text("Add item") },
                         modifier = Modifier.fillMaxWidth(),
-                        singleLine = true
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(
+                            imeAction = ImeAction.Done
+                        ),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                if (itemName.isNotBlank()) {
+                                    viewModel.addToNeedToGet(itemName)
+                                    itemName = ""
+                                    viewModel.setAddItemTypeahead("") // Clear suggestions immediately
+                                    keyboardController?.hide() // Hide the keyboard
+                                }
+                            }
+                        )
                     )
 
                     val suggestions = uiState.addItemSuggestions
@@ -690,7 +712,8 @@ fun ActiveListRow(
 fun PicklistScreen(
     viewModel: ShoppingViewModel,
     onDone: () -> Unit,
-    onOpenEditItem: (Long) -> Unit
+    onOpenEditItem: (Long) -> Unit,
+    onOpenStores: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
 
@@ -702,16 +725,14 @@ fun PicklistScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Picklist — $selectedStoreName") },
-                navigationIcon = {
-                    TextButton(onClick = onDone) { Text("Done") }
-                },
-                actions = {
-                    // Store switcher
-                    Box {
-                        TextButton(onClick = { storeMenuOpen = true }) {
-                            Text("Store")
-                        }
+                title = {
+                    Box(
+                        modifier = Modifier
+                            .wrapContentSize(Alignment.TopStart)
+                            .clickable { storeMenuOpen = true }
+                    ) {
+                        Text("Picklist — $selectedStoreName")
+
                         DropdownMenu(
                             expanded = storeMenuOpen,
                             onDismissRequest = { storeMenuOpen = false }
@@ -721,15 +742,22 @@ fun PicklistScreen(
                                     text = { Text(store.name) },
                                     onClick = {
                                         storeMenuOpen = false
-                                        viewModel.selectStore(store.id)   // <-- THIS is the key
+                                        viewModel.selectStore(store.id)
                                     }
                                 )
                             }
                         }
                     }
+                },
+                navigationIcon = {
+                    TextButton(onClick = onDone) { Text("Done") }
+                },
+                actions = {
+                    TextButton(onClick = onOpenStores) { Text("Stores") }
                 }
             )
         }
+
     ) { padding ->
         Column(
             modifier = Modifier

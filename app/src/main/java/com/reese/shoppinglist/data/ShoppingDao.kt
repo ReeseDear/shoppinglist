@@ -30,9 +30,6 @@ interface ShoppingDao {
     @Query("SELECT id FROM items WHERE name = :name LIMIT 1")
     suspend fun getItemIdByName(name: String): Long?
 
-    /**
-     * IGNORE avoids crashing on duplicates; caller can re-query.
-     */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertItem(item: Item): Long
 
@@ -149,6 +146,10 @@ interface ShoppingDao {
     @Query("UPDATE list_entries SET checkedInCart = CASE WHEN checkedInCart = 1 THEN 0 ELSE 1 END WHERE itemId = :itemId")
     suspend fun toggleCheckedInCart(itemId: Long)
 
+    // ADDED THIS FUNCTION TO FIX UNRESOLVED REFERENCE
+    @Query("UPDATE list_entries SET checkedInCart = :checked WHERE itemId = :itemId")
+    suspend fun updateListEntryChecked(itemId: Long, checked: Boolean)
+
     @Query("DELETE FROM list_entries WHERE itemId = :itemId")
     suspend fun deleteListEntryByItemId(itemId: Long)
 
@@ -167,32 +168,23 @@ interface ShoppingDao {
     suspend fun clearInCartForStore(storeId: Long)
 
     /**
-     * Row model for the Home list (list_entries + items + store_items)
+     * Row model for the Home list
      */
     data class ListEntryRow(
         val listEntryId: Long,
         val itemId: Long,
         val itemName: String,
         val checkedInCart: Boolean,
-
-        // Trip overrides (list_entries)
         val qtyToBuy: Double?,
         val unit: String?,
         val size: String?,
         val priceOverrideCents: Int?,
-
-        // Catalog defaults (items)
         val defaultQuantity: Double?,
         val defaultUnit: String?,
         val defaultPriceCents: Int?,
-
-        // Catalog attribute
         val taxable: Boolean,
-
-        // Per-store override (store_items for selected store)
         val storePriceOverrideCents: Int?,
         val aisle: String?,
-
         val createdAtEpochMs: Long
     )
 
@@ -203,21 +195,16 @@ interface ShoppingDao {
             le.itemId AS itemId,
             i.name AS itemName,
             le.checkedInCart AS checkedInCart,
-
             le.qtyToBuy AS qtyToBuy,
             le.unit AS unit,
             le.size AS size,
             le.priceOverrideCents AS priceOverrideCents,
-
             i.defaultQuantity AS defaultQuantity,
             i.defaultUnit AS defaultUnit,
             i.defaultPriceCents AS defaultPriceCents,
-
             i.taxable AS taxable,
-
             si.priceOverrideCents AS storePriceOverrideCents,
             si.aisle AS aisle,
-
             le.createdAtEpochMs AS createdAtEpochMs
         FROM list_entries le
         INNER JOIN items i ON i.id = le.itemId
@@ -238,26 +225,22 @@ interface ShoppingDao {
             le.itemId AS itemId,
             i.name AS itemName,
             le.checkedInCart AS checkedInCart,
-
             le.qtyToBuy AS qtyToBuy,
             le.unit AS unit,
             le.size AS size,
             le.priceOverrideCents AS priceOverrideCents,
-
             i.defaultQuantity AS defaultQuantity,
             i.defaultUnit AS defaultUnit,
             i.defaultPriceCents AS defaultPriceCents,
-
             i.taxable AS taxable,
-
             si.priceOverrideCents AS storePriceOverrideCents,
             si.aisle AS aisle,
-
             le.createdAtEpochMs AS createdAtEpochMs
         FROM list_entries le
         INNER JOIN items i ON i.id = le.itemId
         INNER JOIN store_items si
             ON si.itemId = i.id AND si.storeId = :storeId
+        WHERE le.checkedInCart = 0
         ORDER BY
             COALESCE(NULLIF(si.aisle, ''), 'ZZZ') COLLATE NOCASE ASC,
             i.name COLLATE NOCASE ASC,
@@ -266,7 +249,7 @@ interface ShoppingDao {
     )
     fun observeListEntries_StoreOnly(storeId: Long): Flow<List<ListEntryRow>>
 
-    // ---------- Picklist rows (store-aware) ----------
+    // ---------- Picklist rows ----------
 
     data class PicklistItemRow(
         val itemId: Long,

@@ -44,44 +44,41 @@ class ShoppingRepository(private val dao: ShoppingDao) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
 
-        // 1) Ensure item exists (case-insensitive exact match)
+        // 1) Find or create the item in the global catalog
         val existing = dao.getItemByExactName(trimmed)
         val itemId = if (existing != null) {
             existing.id
         } else {
-            val inserted = dao.insertItem(Item(name = trimmed))
-            if (inserted > 0) inserted else (dao.getItemIdByName(trimmed) ?: return)
+            val newId = dao.insertItem(Item(name = trimmed))
+            if (newId > 0) newId else (dao.getItemIdByName(trimmed) ?: return)
         }
 
-        // 2) Ensure a store_items row exists for current store
-        val existingStoreItem = dao.getStoreItem(storeId, itemId)
-        if (existingStoreItem == null) {
-            dao.upsertStoreItem(
-                StoreItem(
-                    storeId = storeId,
-                    itemId = itemId,
-                    aisle = null,
-                    showIfAisleUnassigned = true,
-                    priceOverrideCents = null
-                )
+        // 2) FORCE the link to the store.
+        // This fixes the 'Invisible Item' bug caused by the INNER JOIN in the DAO.
+        dao.upsertStoreItem(
+            StoreItem(
+                storeId = storeId,
+                itemId = itemId,
+                aisle = null,
+                showIfAisleUnassigned = true,
+                priceOverrideCents = null
             )
-        }
+        )
 
-        // 3) Ensure list entry exists
-        if (dao.getListEntryIdByItemId(itemId) == null) {
+        // 3) Add to the shopping list or make sure it is visible (un-checked)
+        val currentEntryId = dao.getListEntryIdByItemId(itemId)
+        if (currentEntryId == null) {
             dao.insertListEntry(
                 ListEntry(
                     itemId = itemId,
-                    checkedInCart = false,
-                    qtyToBuy = null,
-                    unit = null,
-                    size = null,
-                    priceOverrideCents = null
+                    checkedInCart = false
                 )
             )
+        } else {
+            // If it exists but was hidden (checked), show it again.
+            dao.updateListEntryChecked(itemId, false)
         }
     }
-
     suspend fun addToActiveListByItemId(itemId: Long) {
         if (dao.getListEntryIdByItemId(itemId) == null) {
             dao.insertListEntry(
