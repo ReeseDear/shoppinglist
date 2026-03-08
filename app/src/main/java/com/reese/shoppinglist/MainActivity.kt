@@ -59,6 +59,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.PopupProperties
 import com.reese.shoppinglist.data.Item
 import com.reese.shoppinglist.data.ShoppingDatabase
 import com.reese.shoppinglist.data.ShoppingRepository
@@ -196,7 +197,14 @@ fun ShoppingListScreen(
             when {
                 aIsUn && !bIsUn -> 1
                 !aIsUn && bIsUn -> -1
-                else -> a.lowercase(Locale.getDefault()).compareTo(b.lowercase(Locale.getDefault()))
+                else -> {
+                    val aNum = a.trim().toIntOrNull()
+                    val bNum = b.trim().toIntOrNull()
+                    when {
+                        aNum != null && bNum != null -> aNum.compareTo(bNum)
+                        else -> a.lowercase(Locale.getDefault()).compareTo(b.lowercase(Locale.getDefault()))
+                    }
+                }
             }
         }
     }
@@ -284,14 +292,17 @@ fun ShoppingListScreen(
                     DropdownMenu(
                         expanded = suggestions.isNotEmpty() && itemName.trim().length >= 2,
                         onDismissRequest = { viewModel.setAddItemTypeahead("") },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        properties = PopupProperties(focusable = false)
                     ) {
                         suggestions.forEach { s ->
                             DropdownMenuItem(
                                 text = { Text(s.name) },
                                 onClick = {
-                                    itemName = s.name
+                                    viewModel.addToNeedToGet(s.name)
+                                    itemName = ""
                                     viewModel.setAddItemTypeahead("")
+                                    keyboardController?.hide()
                                 }
                             )
                         }
@@ -778,12 +789,29 @@ fun PicklistScreen(
             val grouped = uiState.picklistRows.groupBy {
                 it.aisle?.trim().takeUnless { it.isNullOrEmpty() } ?: "Unassigned"
             }
+            val sortedAisleKeys = grouped.keys.sortedWith { a, b ->
+                val aIsUn = a.equals("Unassigned", ignoreCase = true)
+                val bIsUn = b.equals("Unassigned", ignoreCase = true)
+                when {
+                    aIsUn && !bIsUn -> 1
+                    !aIsUn && bIsUn -> -1
+                    else -> {
+                        val aNum = a.trim().toIntOrNull()
+                        val bNum = b.trim().toIntOrNull()
+                        when {
+                            aNum != null && bNum != null -> aNum.compareTo(bNum)
+                            else -> a.lowercase(Locale.getDefault()).compareTo(b.lowercase(Locale.getDefault()))
+                        }
+                    }
+                }
+            }
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                grouped.forEach { (aisle, rows) ->
+                sortedAisleKeys.forEach { aisle ->
+                    val rows = grouped[aisle].orEmpty()
                     item {
                         Text(
                             text = aisle,
@@ -1089,7 +1117,8 @@ fun EditItemScreen(
             DropdownMenu(
                 expanded = aisleSugs.isNotEmpty() && aisleField.text.trim().length >= 2,
                 onDismissRequest = { viewModel.setAisleTypeahead(selectedStoreId, "") },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                properties = PopupProperties(focusable = false)
             ) {
                 aisleSugs.forEach { a ->
                     DropdownMenuItem(
