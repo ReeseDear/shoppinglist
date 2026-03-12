@@ -23,9 +23,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
@@ -51,6 +55,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.font.FontWeight
@@ -187,7 +192,11 @@ fun ShoppingListScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     var itemName by remember { mutableStateOf("") }
+    var aisleInput by remember { mutableStateOf("") }
     val keyboardController = LocalSoftwareKeyboardController.current
+    val context = LocalContext.current
+    var dataMenuOpen by remember { mutableStateOf(false) }
+    var resultMessage by remember { mutableStateOf<String?>(null) }
 
     fun sortAisleKeys(keys: Set<String>): List<String> {
         val unassigned = "Unassigned"
@@ -209,6 +218,17 @@ fun ShoppingListScreen(
         }
     }
 
+    resultMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { resultMessage = null },
+            title = { Text("Result") },
+            text = { Text(msg) },
+            confirmButton = {
+                TextButton(onClick = { resultMessage = null }) { Text("OK") }
+            }
+        )
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -216,7 +236,38 @@ fun ShoppingListScreen(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer,
                     titleContentColor = MaterialTheme.colorScheme.onPrimaryContainer
-                )
+                ),
+                actions = {
+                    IconButton(onClick = { dataMenuOpen = true }) {
+                        Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                    }
+                    DropdownMenu(
+                        expanded = dataMenuOpen,
+                        onDismissRequest = { dataMenuOpen = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Export Data") },
+                            onClick = {
+                                dataMenuOpen = false
+                                viewModel.exportData(context) { resultMessage = it }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Import Data") },
+                            onClick = {
+                                dataMenuOpen = false
+                                viewModel.importData(context) { resultMessage = it }
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Import Legacy Items") },
+                            onClick = {
+                                dataMenuOpen = false
+                                viewModel.importLegacyItems { resultMessage = it }
+                            }
+                        )
+                    }
+                }
             )
         }
     ) { padding ->
@@ -279,8 +330,9 @@ fun ShoppingListScreen(
                         keyboardActions = KeyboardActions(
                             onDone = {
                                 if (itemName.isNotBlank()) {
-                                    viewModel.addToNeedToGet(itemName)
+                                    viewModel.addToNeedToGet(itemName, aisleInput)
                                     itemName = ""
+                                    aisleInput = ""
                                     viewModel.setAddItemTypeahead("") // Clear suggestions immediately
                                     keyboardController?.hide() // Hide the keyboard
                                 }
@@ -299,10 +351,54 @@ fun ShoppingListScreen(
                             DropdownMenuItem(
                                 text = { Text(s.name) },
                                 onClick = {
-                                    viewModel.addToNeedToGet(s.name)
+                                    viewModel.addToNeedToGet(s.name, aisleInput)
                                     itemName = ""
+                                    aisleInput = ""
                                     viewModel.setAddItemTypeahead("")
                                     keyboardController?.hide()
+                                }
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    OutlinedTextField(
+                        value = aisleInput,
+                        onValueChange = {
+                            aisleInput = it
+                            viewModel.setAisleTypeahead(uiState.selectedStoreId, it)
+                        },
+                        label = { Text("Aisle (optional)") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                if (itemName.isNotBlank()) {
+                                    viewModel.addToNeedToGet(itemName, aisleInput)
+                                    itemName = ""
+                                    aisleInput = ""
+                                    viewModel.setAddItemTypeahead("")
+                                    keyboardController?.hide()
+                                }
+                            }
+                        )
+                    )
+
+                    val aisleSugs = uiState.aisleSuggestions
+                    DropdownMenu(
+                        expanded = aisleSugs.isNotEmpty() && aisleInput.trim().isNotEmpty(),
+                        onDismissRequest = { viewModel.setAisleTypeahead(uiState.selectedStoreId, "") },
+                        modifier = Modifier.fillMaxWidth(),
+                        properties = PopupProperties(focusable = false)
+                    ) {
+                        aisleSugs.forEach { a ->
+                            DropdownMenuItem(
+                                text = { Text(a) },
+                                onClick = {
+                                    aisleInput = a
+                                    viewModel.setAisleTypeahead(uiState.selectedStoreId, "")
                                 }
                             )
                         }
@@ -316,8 +412,9 @@ fun ShoppingListScreen(
                     ) {
                         Button(
                             onClick = {
-                                viewModel.addToNeedToGet(itemName)
+                                viewModel.addToNeedToGet(itemName, aisleInput)
                                 itemName = ""
+                                aisleInput = ""
                             },
                             modifier = Modifier.weight(1f),
                             enabled = itemName.trim().isNotEmpty()

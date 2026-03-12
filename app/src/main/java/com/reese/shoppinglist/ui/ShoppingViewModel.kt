@@ -1,5 +1,6 @@
 package com.reese.shoppinglist.ui
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -200,7 +201,7 @@ class ShoppingViewModel(private val repository: ShoppingRepository, private val 
         }
     }
 
-    fun addToNeedToGet(name: String) {
+    fun addToNeedToGet(name: String, aisle: String = "") {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
 
@@ -210,10 +211,10 @@ class ShoppingViewModel(private val repository: ShoppingRepository, private val 
         if (storeId != null) {
             viewModelScope.launch {
                 // 1. Clear suggestions immediately so the UI cleans up
-                _uiState.value = _uiState.value.copy(addItemSuggestions = emptyList())
+                _uiState.value = _uiState.value.copy(addItemSuggestions = emptyList(), aisleSuggestions = emptyList())
 
                 // 2. Add to DB and WAIT for it to finish
-                repository.addItemByNameToStoreAndList(trimmed, storeId)
+                repository.addItemByNameToStoreAndList(trimmed, storeId, aisle.trim().takeIf { it.isNotEmpty() })
 
                 // 3. Force the collection to restart to see the new item
                 startCollectingActiveList(storeId)
@@ -306,6 +307,44 @@ class ShoppingViewModel(private val repository: ShoppingRepository, private val 
                 showIfAisleUnassigned = showIfAisleUnassigned,
                 priceOverrideCents = priceOverrideCents
             )
+        }
+    }
+
+    // ---------- Export / Import ----------
+
+    fun exportData(context: Context, onDone: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val json = repository.exportData()
+                val file = java.io.File(context.getExternalFilesDir(null), "shopping_backup.json")
+                file.writeText(json)
+                onDone("Exported to:\n${file.absolutePath}")
+            } catch (e: Exception) {
+                onDone("Export failed: ${e.message}")
+            }
+        }
+    }
+
+    fun importData(context: Context, onDone: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val file = java.io.File(context.getExternalFilesDir(null), "shopping_backup.json")
+                if (!file.exists()) {
+                    onDone("No backup file found at:\n${file.absolutePath}\n\nCopy your backup there first.")
+                    return@launch
+                }
+                val count = repository.importData(file.readText())
+                onDone("Imported $count items successfully.")
+            } catch (e: Exception) {
+                onDone("Import failed: ${e.message}")
+            }
+        }
+    }
+
+    fun importLegacyItems(onDone: (String) -> Unit) {
+        viewModelScope.launch {
+            val count = repository.importLegacyCsvItems()
+            onDone("Added $count new items from legacy list.")
         }
     }
 

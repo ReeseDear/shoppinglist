@@ -37,6 +37,9 @@ interface ShoppingDao {
     suspend fun updateItem(item: Item)
 
     @Query("SELECT * FROM items ORDER BY name COLLATE NOCASE")
+    suspend fun getAllItemsOnce(): List<Item>
+
+    @Query("SELECT * FROM items ORDER BY name COLLATE NOCASE")
     fun observeAllItems(): Flow<List<Item>>
 
     @Query(
@@ -91,6 +94,9 @@ interface ShoppingDao {
 
     @Query("DELETE FROM store_items WHERE storeId = :storeId AND itemId = :itemId")
     suspend fun deleteStoreItem(storeId: Long, itemId: Long)
+
+    @Query("SELECT * FROM store_items")
+    suspend fun getAllStoreItemsOnce(): List<StoreItem>
 
     @Query("SELECT * FROM store_items WHERE itemId = :itemId")
     suspend fun getStoreItemsForItemOnce(itemId: Long): List<StoreItem>

@@ -1,6 +1,8 @@
 package com.reese.shoppinglist.data
 
 import kotlinx.coroutines.flow.Flow
+import org.json.JSONArray
+import org.json.JSONObject
 
 class ShoppingRepository(private val dao: ShoppingDao) {
 
@@ -40,7 +42,7 @@ class ShoppingRepository(private val dao: ShoppingDao) {
         else dao.observeListEntriesForStore(storeId)
     }
 
-    suspend fun addItemByNameToStoreAndList(name: String, storeId: Long) {
+    suspend fun addItemByNameToStoreAndList(name: String, storeId: Long, aisle: String? = null) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
 
@@ -59,7 +61,7 @@ class ShoppingRepository(private val dao: ShoppingDao) {
             StoreItem(
                 storeId = storeId,
                 itemId = itemId,
-                aisle = null,
+                aisle = aisle?.trim()?.takeIf { it.isNotEmpty() },
                 showIfAisleUnassigned = true,
                 priceOverrideCents = null
             )
@@ -166,4 +168,137 @@ class ShoppingRepository(private val dao: ShoppingDao) {
 
     fun observeAisleSuggestions(storeId: Long, query: String, limit: Int = 10): Flow<List<String>> =
         dao.observeAisleSuggestions(storeId, query, limit)
+
+    // ---------- Export / Import ----------
+
+    suspend fun exportData(): String {
+        val items = dao.getAllItemsOnce()
+        val stores = dao.getStoresOnce()
+        val storeItems = dao.getAllStoreItemsOnce()
+
+        val storeMap = stores.associateBy { it.id }
+        val storeItemsByItemId = storeItems.groupBy { it.itemId }
+
+        val root = JSONObject()
+        root.put("version", 1)
+
+        val itemsArray = JSONArray()
+        for (item in items) {
+            val obj = JSONObject()
+            obj.put("name", item.name)
+            if (item.defaultPriceCents != null) obj.put("defaultPriceCents", item.defaultPriceCents)
+            obj.put("taxable", item.taxable)
+            if (item.defaultQuantity != null) obj.put("defaultQuantity", item.defaultQuantity)
+            if (item.defaultUnit != null) obj.put("defaultUnit", item.defaultUnit)
+            if (item.defaultSize != null) obj.put("defaultSize", item.defaultSize)
+            if (item.notes != null) obj.put("notes", item.notes)
+
+            val assignments = JSONArray()
+            storeItemsByItemId[item.id]?.forEach { si ->
+                val store = storeMap[si.storeId] ?: return@forEach
+                val a = JSONObject()
+                a.put("storeName", store.name)
+                if (si.aisle != null) a.put("aisle", si.aisle)
+                if (si.priceOverrideCents != null) a.put("priceOverrideCents", si.priceOverrideCents)
+                a.put("showIfAisleUnassigned", si.showIfAisleUnassigned)
+                assignments.put(a)
+            }
+            obj.put("storeAssignments", assignments)
+            itemsArray.put(obj)
+        }
+        root.put("items", itemsArray)
+        return root.toString(2)
+    }
+
+    suspend fun importData(json: String): Int {
+        val root = JSONObject(json)
+        val stores = dao.getStoresOnce()
+        val storeByName = stores.associateBy { it.name }
+
+        val itemsArray = root.getJSONArray("items")
+        var count = 0
+        for (i in 0 until itemsArray.length()) {
+            val obj = itemsArray.getJSONObject(i)
+            val name = obj.getString("name").trim()
+            if (name.isEmpty()) continue
+
+            val existing = dao.getItemByExactName(name)
+            val itemId = if (existing != null) {
+                existing.id
+            } else {
+                val newItem = Item(
+                    name = name,
+                    defaultPriceCents = if (obj.has("defaultPriceCents")) obj.getInt("defaultPriceCents") else null,
+                    taxable = obj.optBoolean("taxable", true),
+                    defaultQuantity = if (obj.has("defaultQuantity")) obj.getDouble("defaultQuantity") else null,
+                    defaultUnit = if (obj.has("defaultUnit")) obj.getString("defaultUnit") else null,
+                    defaultSize = if (obj.has("defaultSize")) obj.getString("defaultSize") else null,
+                    notes = if (obj.has("notes")) obj.getString("notes") else null
+                )
+                val id = dao.insertItem(newItem)
+                if (id > 0) id else (dao.getItemIdByName(name) ?: continue)
+            }
+
+            val assignments = obj.optJSONArray("storeAssignments")
+            if (assignments != null) {
+                for (j in 0 until assignments.length()) {
+                    val a = assignments.getJSONObject(j)
+                    val store = storeByName[a.getString("storeName")] ?: continue
+                    dao.upsertStoreItem(
+                        StoreItem(
+                            storeId = store.id,
+                            itemId = itemId,
+                            aisle = if (a.has("aisle")) a.getString("aisle").ifEmpty { null } else null,
+                            priceOverrideCents = if (a.has("priceOverrideCents")) a.getInt("priceOverrideCents") else null,
+                            showIfAisleUnassigned = a.optBoolean("showIfAisleUnassigned", true)
+                        )
+                    )
+                }
+            }
+            count++
+        }
+        return count
+    }
+
+    suspend fun importLegacyCsvItems(): Int {
+        val legacyItems = listOf(
+            "Valerium root", "Beef Sausage", "Beans and rice", "Peanuts", "Tater tots",
+            "Beef jerky", "tone soap", "Swiss miss", "Gum", "Tide", "Water", "Eggs",
+            "Sandwhich meats", "Fruits", "Mayonnaise", "Ketchup", "Evaporated milk",
+            "Banana boat dark tanning oil", "Neutrogena", "Fish fry", "Shampoo", "Conditioner",
+            "Ice Cream", "Rotella motor oil", "Canned peaches", "Pineapple",
+            "Breakfast sausage", "Maple syrup", "Roll-aids", "Chili", "Garlic bread",
+            "Tuna helper", "Q Tips", "Biscuits", "Ritz crackers", "Salsa", "Chocolate",
+            "Sunflower seeds", "almonds", "Breakfast Cereal", "Bread", "Milk",
+            "Orange juice", "Bacon", "Potatoes", "Toilet Paper", "Paper Towels",
+            "Anti-itch medicine", "Tortilla Chips", "Pancake Mix", "Ground Beef",
+            "Neosporin", "Shrimp", "Country Crock Spread", "Butter", "Shake and bake",
+            "Chicken Legs", "Stir Fry vegetables", "Stew meat", "Tomatoes", "Listerine",
+            "Tomato Paste", "Tomato Sauce", "Deodorant", "Parmesan cheese", "Prego sauce",
+            "Eye drops", "Alcohol", "Beef broth", "Sage", "Holy basil", "Rosemary",
+            "Garlic", "Cashews", "Beef stew seasoning", "Corn", "Sugar", "Peanut Butter",
+            "Corn meal", "Zucchini", "Watermelon", "Strawberries", "Plums", "Peppers",
+            "Onions", "Lettuce", "Limes", "Lemons", "Grapes", "Cucumbers", "Cherries",
+            "Carrots", "Broccoli", "Berries", "Bananas", "Asparagus", "Apples",
+            "Rib Eye Steak", "Baking Powder", "Baking Soda", "Batteries", "Bleach",
+            "Bottled Water", "Chicken and Rice Soup", "Chicken Noodle Soup", "Raisins",
+            "Gatorade", "Tea", "mini blind", "El. Cook top cleaner", "Vinegar",
+            "Bed Sheet", "Large trash bags", "Air filters", "Spaghetti", "Popcorn",
+            "Chicken", "salami", "Cheese", "lemon", "blackberries", "truvia",
+            "beef pot pie", "turkey pot pie", "saran wrap", "melatonin", "Sponges",
+            "steel wool 0000", "Shaving Cream", "Parsley", "Oatmill C & S",
+            "Oatmill M & BS", "Oatmill A & C", "Casava/Cauliflower Chips", "Toothpaste",
+            "bubble bath", "dried banana chips", "pistachios", "Tuna",
+            "cfl 25watt softwhite", "hibiscus", "hawthorn berry", "canned cat food",
+            "kitty litter", "de wormer", "3d white strips"
+        )
+        var count = 0
+        for (name in legacyItems) {
+            if (dao.getItemByExactName(name) == null) {
+                dao.insertItem(Item(name = name))
+                count++
+            }
+        }
+        return count
+    }
 }
