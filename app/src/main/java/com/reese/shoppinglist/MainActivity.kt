@@ -9,6 +9,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -1126,6 +1128,15 @@ fun EditItemScreen(
     var isActive by remember { mutableStateOf(true) }
     var showIfAisleUnassigned by remember { mutableStateOf(true) }
 
+    // Focus requesters for keyboard Next navigation
+    val storePriceFR = remember { FocusRequester() }
+    val aisleFR = remember { FocusRequester() }
+    val qtyFR = remember { FocusRequester() }
+    val unitFR = remember { FocusRequester() }
+    val sizeFR = remember { FocusRequester() }
+    val defaultPriceFR = remember { FocusRequester() }
+    val notesFR = remember { FocusRequester() }
+
     LaunchedEffect(item) {
         if (item != null) {
             name = item.name
@@ -1176,7 +1187,8 @@ fun EditItemScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp),
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             if (itemId == null) {
@@ -1189,14 +1201,36 @@ fun EditItemScreen(
                 return@Column
             }
 
+            // 1. Name
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
                 label = { Text("Name") },
                 modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                keyboardActions = KeyboardActions(onNext = { storePriceFR.requestFocus() })
             )
 
+            // 2. Store price (numeric only, decimal keyboard)
+            OutlinedTextField(
+                value = storePrice,
+                onValueChange = { new ->
+                    if (new.isEmpty() || new.matches(Regex("^\\d*\\.?\\d*$"))) storePrice = new
+                },
+                label = { Text("Store price (selected store)") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(storePriceFR),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Decimal,
+                    imeAction = ImeAction.Next
+                ),
+                keyboardActions = KeyboardActions(onNext = { aisleFR.requestFocus() })
+            )
+
+            // 3. Aisle (with typeahead dropdown)
             OutlinedTextField(
                 value = aisleField,
                 onValueChange = {
@@ -1204,10 +1238,13 @@ fun EditItemScreen(
                     viewModel.setAisleTypeahead(selectedStoreId, it.text)
                 },
                 label = { Text("Aisle (selected store)") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(aisleFR),
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                keyboardActions = KeyboardActions(onNext = { qtyFR.requestFocus() })
             )
-
 
             val aisleSugs = uiState.aisleSuggestions
 
@@ -1231,6 +1268,7 @@ fun EditItemScreen(
                 }
             }
 
+            // 4. Qty / Unit
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -1239,18 +1277,23 @@ fun EditItemScreen(
                     value = defaultQty,
                     onValueChange = { defaultQty = it },
                     label = { Text("Quantity") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true
+                    modifier = Modifier.weight(1f).focusRequester(qtyFR),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { unitFR.requestFocus() })
                 )
                 OutlinedTextField(
                     value = defaultUnit,
                     onValueChange = { defaultUnit = it },
                     label = { Text("Default unit") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true
+                    modifier = Modifier.weight(1f).focusRequester(unitFR),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { sizeFR.requestFocus() })
                 )
             }
 
+            // 5. Size / Default price
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -1259,32 +1302,28 @@ fun EditItemScreen(
                     value = defaultSize,
                     onValueChange = { defaultSize = it },
                     label = { Text("Size") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true
+                    modifier = Modifier.weight(1f).focusRequester(sizeFR),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { defaultPriceFR.requestFocus() })
                 )
                 OutlinedTextField(
                     value = defaultPrice,
                     onValueChange = { defaultPrice = it },
                     label = { Text("Default price") },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true
+                    modifier = Modifier.weight(1f).focusRequester(defaultPriceFR),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { notesFR.requestFocus() })
                 )
             }
 
-            // ✅ New: store-specific price override for currently selected store
-            OutlinedTextField(
-                value = storePrice,
-                onValueChange = { storePrice = it },
-                label = { Text("Store price (selected store)") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true
-            )
-
+            // 6. Notes
             OutlinedTextField(
                 value = notes,
                 onValueChange = { notes = it },
                 label = { Text("Notes") },
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth().focusRequester(notesFR)
             )
 
             Row(
