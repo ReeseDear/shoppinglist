@@ -34,7 +34,7 @@ data class StoreItem(
 
     // Per-store override (optional)
     val priceOverrideCents: Int? = null,
-    val showIfAisleUnassigned: Boolean = true,
+    val showIfAisleUnassigned: Boolean = false,
 
     val createdAtEpochMs: Long = System.currentTimeMillis(),
     val updatedAtEpochMs: Long = System.currentTimeMillis()

@@ -23,7 +23,6 @@ data class ShoppingUiState(
     val selectedStoreId: Long? = null,
 
     // Home list
-    val storeSpecificOnly: Boolean = false,
     val needToGetEntries: List<ShoppingDao.ListEntryRow> = emptyList(),
     val inCartEntries: List<ShoppingDao.ListEntryRow> = emptyList(),
     val needToGetEntriesByAisle: Map<String, List<ShoppingDao.ListEntryRow>> = emptyMap(),
@@ -172,18 +171,10 @@ class ShoppingViewModel(private val repository: ShoppingRepository, private val 
 
     // ---------- Home list ----------
 
-    fun setStoreSpecificOnly(enabled: Boolean) {
-        if (_uiState.value.storeSpecificOnly == enabled) return
-        _uiState.value = _uiState.value.copy(storeSpecificOnly = enabled)
-        val storeId = _uiState.value.selectedStoreId ?: return
-        startCollectingActiveList(storeId)
-    }
-
     private fun startCollectingActiveList(storeId: Long) {
         activeListJob?.cancel()
-        val storeOnly = _uiState.value.storeSpecificOnly
         activeListJob = viewModelScope.launch {
-            repository.observeActiveListForStore(storeId, storeOnly).collect { rows ->
+            repository.observeActiveListForStore(storeId).collect { rows ->
                 val need = rows.filter { !it.checkedInCart }
                 val cart = rows.filter { it.checkedInCart }
 
@@ -297,7 +288,8 @@ class ShoppingViewModel(private val repository: ShoppingRepository, private val 
         storeId: Long,
         aisle: String?,
         showIfAisleUnassigned: Boolean,
-        priceOverrideCents: Int?
+        priceOverrideCents: Int?,
+        applyAisleToAllStores: Boolean = false
     ) {
         viewModelScope.launch {
             repository.saveItemForStoreWithAisle(
@@ -305,7 +297,8 @@ class ShoppingViewModel(private val repository: ShoppingRepository, private val 
                 storeId = storeId,
                 aisle = aisle,
                 showIfAisleUnassigned = showIfAisleUnassigned,
-                priceOverrideCents = priceOverrideCents
+                priceOverrideCents = priceOverrideCents,
+                applyAisleToAllStores = applyAisleToAllStores
             )
         }
     }

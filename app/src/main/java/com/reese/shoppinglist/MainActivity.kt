@@ -444,27 +444,10 @@ fun ShoppingListScreen(
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
                 item {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        SectionHeader(
-                            title = "Need",
-                            count = uiState.needToGetEntries.size,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Checkbox(
-                                checked = uiState.storeSpecificOnly,
-                                onCheckedChange = { viewModel.setStoreSpecificOnly(it) }
-                            )
-                            Text("Store specific only")
-                        }
-                    }
+                    SectionHeader(
+                        title = "Need",
+                        count = uiState.needToGetEntries.size
+                    )
                 }
 
                 val needKeys = sortAisleKeys(needGroups.keys)
@@ -1105,6 +1088,10 @@ fun EditItemScreen(
         if (itemId != null) viewModel.loadItemForEdit(itemId)
     }
 
+    var storeMenuOpen by remember { mutableStateOf(false) }
+    val selectedStoreName =
+        uiState.stores.firstOrNull { it.id == uiState.selectedStoreId }?.name ?: "No store"
+
     val item = uiState.editingItem
     val selectedStoreId = uiState.selectedStoreId
 
@@ -1126,7 +1113,8 @@ fun EditItemScreen(
 
     var notes by remember { mutableStateOf("") }
     var isActive by remember { mutableStateOf(true) }
-    var showIfAisleUnassigned by remember { mutableStateOf(true) }
+    var showIfAisleUnassigned by remember { mutableStateOf(false) }
+    var applyAisleToAllStores by remember { mutableStateOf(false) }
 
     // Focus requesters for keyboard Next navigation
     val storePriceFR = remember { FocusRequester() }
@@ -1158,12 +1146,12 @@ fun EditItemScreen(
             val si = uiState.editingStoreItems.firstOrNull { it.storeId == selectedStoreId }
             val a = si?.aisle ?: "Unassigned"
             val sp = si?.priceOverrideCents?.let { (it / 100.0).toString() } ?: ""
-            val show = si?.showIfAisleUnassigned ?: true
+            val show = si?.showIfAisleUnassigned ?: false
 
             // ✅ initialize ONCE, do NOT keep resetting while typing
             if (!aisleInitialized) {
                 val sp = si?.priceOverrideCents?.let { (it / 100.0).toString() } ?: ""
-                val show = si?.showIfAisleUnassigned ?: true
+                val show = si?.showIfAisleUnassigned ?: false
 
                 aisleField = TextFieldValue(a, selection = TextRange(0, a.length))
                 storePrice = sp
@@ -1178,7 +1166,30 @@ fun EditItemScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Edit Item") },
+                title = {
+                    Box(
+                        modifier = Modifier
+                            .wrapContentSize(Alignment.TopStart)
+                            .clickable { storeMenuOpen = true }
+                    ) {
+                        Text("Edit Item — $selectedStoreName")
+
+                        DropdownMenu(
+                            expanded = storeMenuOpen,
+                            onDismissRequest = { storeMenuOpen = false }
+                        ) {
+                            uiState.stores.forEach { store ->
+                                DropdownMenuItem(
+                                    text = { Text(store.name) },
+                                    onClick = {
+                                        storeMenuOpen = false
+                                        viewModel.selectStore(store.id)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                },
                 navigationIcon = { TextButton(onClick = onBack) { Text("Back") } }
             )
         }
@@ -1230,21 +1241,34 @@ fun EditItemScreen(
                 keyboardActions = KeyboardActions(onNext = { aisleFR.requestFocus() })
             )
 
-            // 3. Aisle (with typeahead dropdown)
-            OutlinedTextField(
-                value = aisleField,
-                onValueChange = {
-                    aisleField = it
-                    viewModel.setAisleTypeahead(selectedStoreId, it.text)
-                },
-                label = { Text("Aisle (selected store)") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .focusRequester(aisleFR),
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                keyboardActions = KeyboardActions(onNext = { qtyFR.requestFocus() })
-            )
+            // 3. Aisle (with typeahead dropdown) + apply-to-all-stores checkbox
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedTextField(
+                    value = aisleField,
+                    onValueChange = {
+                        aisleField = it
+                        viewModel.setAisleTypeahead(selectedStoreId, it.text)
+                    },
+                    label = { Text("Aisle (selected store)") },
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(aisleFR),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    keyboardActions = KeyboardActions(onNext = { qtyFR.requestFocus() })
+                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Checkbox(
+                        checked = applyAisleToAllStores,
+                        onCheckedChange = { applyAisleToAllStores = it }
+                    )
+                    Text("All stores", style = MaterialTheme.typography.labelSmall)
+                }
+            }
 
             val aisleSugs = uiState.aisleSuggestions
 
@@ -1350,7 +1374,7 @@ fun EditItemScreen(
                         onCheckedChange = { showIfAisleUnassigned = it }
                     )
                     Text(
-                        "Show if aisle unassigned",
+                        "Store-specific item",
                         modifier = Modifier.padding(start = 8.dp)
                     )
                 }
@@ -1398,9 +1422,9 @@ fun EditItemScreen(
                             item = updated,
                             storeId = selectedStoreId!!,
                             aisle = aisleField.text,
-
                             showIfAisleUnassigned = showIfAisleUnassigned,
-                            priceOverrideCents = storePriceCentsParsed
+                            priceOverrideCents = storePriceCentsParsed,
+                            applyAisleToAllStores = applyAisleToAllStores
                         )
 
                         onBack()

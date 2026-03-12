@@ -9,7 +9,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [Store::class, Item::class, StoreItem::class, ListEntry::class],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class ShoppingDatabase : RoomDatabase() {
@@ -32,6 +32,13 @@ abstract class ShoppingDatabase : RoomDatabase() {
             }
         }
 
+        // Repurposes showIfAisleUnassigned to mean "store-specific item"; reset all existing to 0
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("UPDATE store_items SET showIfAisleUnassigned = 0")
+            }
+        }
+
         fun getDatabase(context: Context): ShoppingDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -39,7 +46,7 @@ abstract class ShoppingDatabase : RoomDatabase() {
                     ShoppingDatabase::class.java,
                     "shopping_database"
                 )
-                    .addMigrations(MIGRATION_3_4)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_5_6)
                     .build()
 
                 INSTANCE = instance

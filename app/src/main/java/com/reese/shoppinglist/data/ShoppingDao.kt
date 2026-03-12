@@ -101,6 +101,9 @@ interface ShoppingDao {
     @Query("SELECT * FROM store_items WHERE itemId = :itemId")
     suspend fun getStoreItemsForItemOnce(itemId: Long): List<StoreItem>
 
+    @Query("UPDATE store_items SET aisle = :aisle WHERE itemId = :itemId")
+    suspend fun updateAisleForAllStores(itemId: Long, aisle: String?)
+
     @Query(
         """
         SELECT DISTINCT aisle
@@ -216,6 +219,16 @@ interface ShoppingDao {
         INNER JOIN items i ON i.id = le.itemId
         LEFT JOIN store_items si
             ON si.itemId = i.id AND si.storeId = :storeId
+        WHERE (
+            NOT EXISTS (
+                SELECT 1 FROM store_items si2
+                WHERE si2.itemId = i.id AND si2.showIfAisleUnassigned = 1
+            )
+            OR EXISTS (
+                SELECT 1 FROM store_items si2
+                WHERE si2.itemId = i.id AND si2.showIfAisleUnassigned = 1 AND si2.storeId = :storeId
+            )
+        )
         ORDER BY
             COALESCE(NULLIF(si.aisle, ''), 'ZZZ') COLLATE NOCASE ASC,
             i.name COLLATE NOCASE ASC,
@@ -223,37 +236,6 @@ interface ShoppingDao {
         """
     )
     fun observeListEntriesForStore(storeId: Long): Flow<List<ListEntryRow>>
-
-    @Query(
-        """
-        SELECT
-            le.id AS listEntryId,
-            le.itemId AS itemId,
-            i.name AS itemName,
-            le.checkedInCart AS checkedInCart,
-            le.qtyToBuy AS qtyToBuy,
-            le.unit AS unit,
-            le.size AS size,
-            le.priceOverrideCents AS priceOverrideCents,
-            i.defaultQuantity AS defaultQuantity,
-            i.defaultUnit AS defaultUnit,
-            i.defaultPriceCents AS defaultPriceCents,
-            i.taxable AS taxable,
-            si.priceOverrideCents AS storePriceOverrideCents,
-            si.aisle AS aisle,
-            le.createdAtEpochMs AS createdAtEpochMs
-        FROM list_entries le
-        INNER JOIN items i ON i.id = le.itemId
-        INNER JOIN store_items si
-            ON si.itemId = i.id AND si.storeId = :storeId
-        WHERE le.checkedInCart = 0
-        ORDER BY
-            COALESCE(NULLIF(si.aisle, ''), 'ZZZ') COLLATE NOCASE ASC,
-            i.name COLLATE NOCASE ASC,
-            le.createdAtEpochMs DESC
-        """
-    )
-    fun observeListEntries_StoreOnly(storeId: Long): Flow<List<ListEntryRow>>
 
     // ---------- Picklist rows ----------
 

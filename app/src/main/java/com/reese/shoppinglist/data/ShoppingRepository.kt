@@ -34,13 +34,8 @@ class ShoppingRepository(private val dao: ShoppingDao) {
 
     // ---------- Home list (Active list) ----------
 
-    fun observeActiveListForStore(
-        storeId: Long,
-        storeSpecificOnly: Boolean
-    ): Flow<List<ShoppingDao.ListEntryRow>> {
-        return if (storeSpecificOnly) dao.observeListEntries_StoreOnly(storeId)
-        else dao.observeListEntriesForStore(storeId)
-    }
+    fun observeActiveListForStore(storeId: Long): Flow<List<ShoppingDao.ListEntryRow>> =
+        dao.observeListEntriesForStore(storeId)
 
     suspend fun addItemByNameToStoreAndList(name: String, storeId: Long, aisle: String? = null) {
         val trimmed = name.trim()
@@ -147,18 +142,32 @@ class ShoppingRepository(private val dao: ShoppingDao) {
         storeId: Long,
         aisle: String?,
         showIfAisleUnassigned: Boolean,
-        priceOverrideCents: Int?
+        priceOverrideCents: Int?,
+        applyAisleToAllStores: Boolean = false
     ) {
+        val cleanAisle = aisle?.trim()?.ifEmpty { null }
         upsertItem(item)
         dao.upsertStoreItem(
             StoreItem(
                 storeId = storeId,
                 itemId = item.id,
-                aisle = aisle?.trim()?.ifEmpty { null },
+                aisle = cleanAisle,
                 showIfAisleUnassigned = showIfAisleUnassigned,
                 priceOverrideCents = priceOverrideCents
             )
         )
+        if (applyAisleToAllStores) {
+            // Update aisle on stores that already have a record
+            dao.updateAisleForAllStores(item.id, cleanAisle)
+            // Create records for stores that don't have one yet
+            val allStores = dao.getStoresOnce()
+            val existingStoreIds = dao.getStoreItemsForItemOnce(item.id).map { it.storeId }.toSet()
+            allStores.forEach { store ->
+                if (store.id !in existingStoreIds) {
+                    dao.upsertStoreItem(StoreItem(storeId = store.id, itemId = item.id, aisle = cleanAisle))
+                }
+            }
+        }
     }
 
     // ---------- Typeahead helpers ----------
