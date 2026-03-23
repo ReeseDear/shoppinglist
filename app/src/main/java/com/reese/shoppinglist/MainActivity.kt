@@ -57,6 +57,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
@@ -83,7 +84,6 @@ class MainActivity : ComponentActivity() {
     private val viewModel: ShoppingViewModel by viewModels {
         val database = ShoppingDatabase.getDatabase(applicationContext)
         val repository = ShoppingRepository(database.shoppingDao())
-        val prefs = com.reese.shoppinglist.data.StorePrefs(applicationContext)
         val storePrefs = StorePrefs(applicationContext)
         ShoppingViewModelFactory(repository, storePrefs)
     }
@@ -104,6 +104,23 @@ class MainActivity : ComponentActivity() {
 }
 
 private enum class Screen { HOME, PICKLIST, EDIT_ITEM, STORES }
+
+private fun formatCents(cents: Int): String = "$%.2f".format(cents / 100.0)
+
+private val aisleOrder: Comparator<String> = Comparator { a, b ->
+    val aIsUn = a.equals("Unassigned", ignoreCase = true)
+    val bIsUn = b.equals("Unassigned", ignoreCase = true)
+    when {
+        aIsUn && !bIsUn -> 1
+        !aIsUn && bIsUn -> -1
+        else -> {
+            val aNum = a.trim().toIntOrNull()
+            val bNum = b.trim().toIntOrNull()
+            if (aNum != null && bNum != null) aNum.compareTo(bNum)
+            else a.lowercase(Locale.getDefault()).compareTo(b.lowercase(Locale.getDefault()))
+        }
+    }
+}
 
 private data class Route(
     val screen: Screen,
@@ -141,46 +158,29 @@ fun AppRoot(viewModel: ShoppingViewModel) {
         pop()
     }
 
-    when (val route = currentRoute()) {
-        is Route -> {
-            when (route.screen) {
-                Screen.HOME -> {
-                    ShoppingListScreen(
-                        viewModel = viewModel,
-                        onOpenPicklist = { push(Route(Screen.PICKLIST)) },
-                        onOpenEditItem = { itemId -> push(Route(Screen.EDIT_ITEM, editItemId = itemId)) },
-                        onOpenStores = { push(Route(Screen.STORES)) }
-                    )
-                }
-
-                Screen.PICKLIST -> {
-                    PicklistScreen(
-                        viewModel = viewModel,
-                        onDone = { pop() },
-                        onOpenEditItem = { itemId ->
-                            push(Route(Screen.EDIT_ITEM, editItemId = itemId))
-                        },
-                        onOpenStores = { push(Route(Screen.STORES)) }
-                    )
-                }
-
-
-                Screen.STORES -> {
-                    StoresScreen(
-                        viewModel = viewModel,
-                        onDone = { pop() }
-                    )
-                }
-
-                Screen.EDIT_ITEM -> {
-                    EditItemScreen(
-                        viewModel = viewModel,
-                        itemId = route.editItemId,
-                        onBack = { pop() }
-                    )
-                }
-            }
-        }
+    val route = currentRoute()
+    when (route.screen) {
+        Screen.HOME -> ShoppingListScreen(
+            viewModel = viewModel,
+            onOpenPicklist = { push(Route(Screen.PICKLIST)) },
+            onOpenEditItem = { itemId -> push(Route(Screen.EDIT_ITEM, editItemId = itemId)) },
+            onOpenStores = { push(Route(Screen.STORES)) }
+        )
+        Screen.PICKLIST -> PicklistScreen(
+            viewModel = viewModel,
+            onDone = { pop() },
+            onOpenEditItem = { itemId -> push(Route(Screen.EDIT_ITEM, editItemId = itemId)) },
+            onOpenStores = { push(Route(Screen.STORES)) }
+        )
+        Screen.STORES -> StoresScreen(
+            viewModel = viewModel,
+            onDone = { pop() }
+        )
+        Screen.EDIT_ITEM -> EditItemScreen(
+            viewModel = viewModel,
+            itemId = route.editItemId,
+            onBack = { pop() }
+        )
     }
 }
 
@@ -199,26 +199,6 @@ fun ShoppingListScreen(
     val context = LocalContext.current
     var dataMenuOpen by remember { mutableStateOf(false) }
     var resultMessage by remember { mutableStateOf<String?>(null) }
-
-    fun sortAisleKeys(keys: Set<String>): List<String> {
-        val unassigned = "Unassigned"
-        return keys.sortedWith { a, b ->
-            val aIsUn = a.equals(unassigned, ignoreCase = true)
-            val bIsUn = b.equals(unassigned, ignoreCase = true)
-            when {
-                aIsUn && !bIsUn -> 1
-                !aIsUn && bIsUn -> -1
-                else -> {
-                    val aNum = a.trim().toIntOrNull()
-                    val bNum = b.trim().toIntOrNull()
-                    when {
-                        aNum != null && bNum != null -> aNum.compareTo(bNum)
-                        else -> a.lowercase(Locale.getDefault()).compareTo(b.lowercase(Locale.getDefault()))
-                    }
-                }
-            }
-        }
-    }
 
     resultMessage?.let { msg ->
         AlertDialog(
@@ -313,6 +293,23 @@ fun ShoppingListScreen(
                                 }
                             )
                         }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Checkbox(
+                            checked = uiState.showStoreSpecificOnly,
+                            onCheckedChange = { viewModel.setStoreSpecificFilter(it) }
+                        )
+                        Text(
+                            text = "This store's items only",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.clickable {
+                                viewModel.setStoreSpecificFilter(!uiState.showStoreSpecificOnly)
+                            }
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -446,11 +443,11 @@ fun ShoppingListScreen(
                 item {
                     SectionHeader(
                         title = "Need",
-                        count = uiState.needToGetEntries.size
+                        count = needGroups.values.sumOf { it.size }
                     )
                 }
 
-                val needKeys = sortAisleKeys(needGroups.keys)
+                val needKeys = needGroups.keys.sortedWith(aisleOrder)
                 needKeys.forEach { aisleName ->
                     val entries = needGroups[aisleName].orEmpty()
                     if (entries.isNotEmpty()) {
@@ -466,8 +463,7 @@ fun ShoppingListScreen(
 
                             val priceCents =
                                 row.priceOverrideCents ?: row.storePriceOverrideCents ?: row.defaultPriceCents
-                            val priceText =
-                                priceCents?.let { cents -> "$" + "%.2f".format(cents / 100.0) } ?: ""
+                            val priceText = priceCents?.let { formatCents(it) } ?: ""
 
                             ActiveListRow(
                                 itemId = row.itemId,
@@ -488,14 +484,13 @@ fun ShoppingListScreen(
 
                 item {
                     InCartHeaderRow(
-                        count = uiState.inCartEntries.size,
-                        inCartEntries = uiState.inCartEntries,
+                        count = cartGroups.values.sumOf { it.size },
+                        inCartEntries = cartGroups.values.flatten(),
                         onCheckoutConfirm = { viewModel.checkoutConfirm() }
                     )
                 }
 
-
-                val cartKeys = sortAisleKeys(cartGroups.keys)
+                val cartKeys = cartGroups.keys.sortedWith(aisleOrder)
                 cartKeys.forEach { aisleName ->
                     val entries = cartGroups[aisleName].orEmpty()
                     if (entries.isNotEmpty()) {
@@ -511,8 +506,7 @@ fun ShoppingListScreen(
 
                             val priceCents =
                                 row.priceOverrideCents ?: row.storePriceOverrideCents ?: row.defaultPriceCents
-                            val priceText =
-                                priceCents?.let { cents -> "$" + "%.2f".format(cents / 100.0) } ?: ""
+                            val priceText = priceCents?.let { formatCents(it) } ?: ""
 
                             ActiveListRow(
                                 itemId = row.itemId,
@@ -560,14 +554,7 @@ private fun InCartHeaderRow(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = "In the cart ($count)",
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.weight(1f)
-        )
-
+        SectionHeader(title = "In the cart", count = count, modifier = Modifier.weight(1f))
         TextButton(
             onClick = { if (count > 0) showCheckout = true },
             enabled = count > 0
@@ -575,43 +562,25 @@ private fun InCartHeaderRow(
     }
 
     if (showCheckout) {
-        // Compute totals from rows already in memory
-        var missingPriceCount = 0
         var totalCents = 0L
         var taxableCents = 0L
-
         inCartEntries.forEach { row ->
             val unitPriceCents =
-                row.priceOverrideCents
-                    ?: row.storePriceOverrideCents
-                    ?: row.defaultPriceCents
-
+                (row.priceOverrideCents ?: row.storePriceOverrideCents ?: row.defaultPriceCents ?: 0)
             val qty = row.qtyToBuy ?: row.defaultQuantity ?: 1.0
-
-            if (unitPriceCents == null) {
-                missingPriceCount += 1
-            } else {
-                val line = (unitPriceCents.toDouble() * qty).toLong()
-                totalCents += line
-                if (row.taxable) taxableCents += line
-            }
+            val line = (unitPriceCents.toDouble() * qty).toLong()
+            totalCents += line
+            if (row.taxable) taxableCents += line
         }
-
-        fun money(cents: Long): String = "$" + "%.2f".format(cents / 100.0)
 
         AlertDialog(
             onDismissRequest = { showCheckout = false },
             title = { Text("Checkout") },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Total (priced items): ${money(totalCents)}")
-                    Text("Taxable subtotal: ${money(taxableCents)}")
-
-                    if (missingPriceCount > 0) {
-                        Text("Unpriced items skipped: $missingPriceCount")
-                    }
-
-                    Text("Confirm will clear only the items that are currently in the cart.")
+                    Text("Total: ${formatCents(totalCents.toInt())}")
+                    Text("Taxable subtotal: ${formatCents(taxableCents.toInt())}")
+                    Text("Confirm will clear all items currently in the cart.")
                 }
             },
             confirmButton = {
@@ -868,42 +837,25 @@ fun PicklistScreen(
 
             Spacer(Modifier.height(12.dp))
 
-            val grouped = uiState.picklistRows.groupBy {
-                it.aisle?.trim().takeUnless { it.isNullOrEmpty() } ?: "Unassigned"
-            }
-            val sortedAisleKeys = grouped.keys.sortedWith { a, b ->
-                val aIsUn = a.equals("Unassigned", ignoreCase = true)
-                val bIsUn = b.equals("Unassigned", ignoreCase = true)
-                when {
-                    aIsUn && !bIsUn -> 1
-                    !aIsUn && bIsUn -> -1
-                    else -> {
-                        val aNum = a.trim().toIntOrNull()
-                        val bNum = b.trim().toIntOrNull()
-                        when {
-                            aNum != null && bNum != null -> aNum.compareTo(bNum)
-                            else -> a.lowercase(Locale.getDefault()).compareTo(b.lowercase(Locale.getDefault()))
-                        }
-                    }
-                }
+            val grouped = remember(uiState.picklistRows) {
+                uiState.picklistRows
+                    .groupBy { it.aisle?.trim()?.ifEmpty { null } ?: "Unassigned" }
+                    .toSortedMap(aisleOrder)
             }
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                sortedAisleKeys.forEach { aisle ->
-                    val rows = grouped[aisle].orEmpty()
-                    item {
+                grouped.forEach { (aisle, rows) ->
+                    item(key = "header_$aisle") {
                         Text(
                             text = aisle,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.padding(vertical = 6.dp)
                         )
                     }
-
-                    items(rows.size) { index ->
-                        val row = rows[index]
+                    items(rows, key = { it.itemId }) { row ->
                         PicklistRow(
                             name = row.name,
                             priceCents = row.storePriceOverrideCents ?: row.defaultPriceCents,
@@ -951,10 +903,7 @@ fun PicklistRow(
             )
 
             if (priceCents != null) {
-                Text(
-                    text = "$" + "%.2f".format(priceCents / 100.0),
-                    fontWeight = FontWeight.Medium
-                )
+                Text(text = formatCents(priceCents), fontWeight = FontWeight.Medium)
             }
         }
     }
@@ -1031,8 +980,7 @@ fun StoresScreen(
             Spacer(Modifier.height(8.dp))
 
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(uiState.stores.size) { index ->
-                    val store = uiState.stores[index]
+                items(uiState.stores, key = { it.id }) { store ->
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1113,7 +1061,7 @@ fun EditItemScreen(
 
     var notes by remember { mutableStateOf("") }
     var isActive by remember { mutableStateOf(true) }
-    var showIfAisleUnassigned by remember { mutableStateOf(false) }
+    var isStoreSpecific by remember { mutableStateOf(false) }
     var applyAisleToAllStores by remember { mutableStateOf(false) }
 
     // Focus requesters for keyboard Next navigation
@@ -1142,22 +1090,13 @@ fun EditItemScreen(
     }
 
     LaunchedEffect(item?.id, selectedStoreId, uiState.editingStoreItems) {
-        if (item != null && selectedStoreId != null) {
+        if (item != null && selectedStoreId != null && !aisleInitialized) {
             val si = uiState.editingStoreItems.firstOrNull { it.storeId == selectedStoreId }
-            val a = si?.aisle ?: "Unassigned"
-            val sp = si?.priceOverrideCents?.let { (it / 100.0).toString() } ?: ""
-            val show = si?.showIfAisleUnassigned ?: false
-
-            // ✅ initialize ONCE, do NOT keep resetting while typing
-            if (!aisleInitialized) {
-                val sp = si?.priceOverrideCents?.let { (it / 100.0).toString() } ?: ""
-                val show = si?.showIfAisleUnassigned ?: false
-
-                aisleField = TextFieldValue(a, selection = TextRange(0, a.length))
-                storePrice = sp
-                showIfAisleUnassigned = show
-                aisleInitialized = true
-            }
+            val a = si?.aisle ?: ""
+            aisleField = TextFieldValue(a, selection = TextRange(0, a.length))
+            storePrice = si?.priceOverrideCents?.let { (it / 100.0).toString() } ?: ""
+            isStoreSpecific = si?.isStoreSpecific ?: false
+            aisleInitialized = true
         }
     }
 
@@ -1241,54 +1180,65 @@ fun EditItemScreen(
                 keyboardActions = KeyboardActions(onNext = { aisleFR.requestFocus() })
             )
 
-            // 3. Aisle (with typeahead dropdown) + apply-to-all-stores checkbox
+            // 3. Aisle (with focus-triggered dropdown) + apply-to-all-stores checkbox
+            var aisleDropdownOpen by remember { mutableStateOf(false) }
+            val aisleSugs = uiState.aisleSuggestions
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                OutlinedTextField(
-                    value = aisleField,
-                    onValueChange = {
-                        aisleField = it
-                        viewModel.setAisleTypeahead(selectedStoreId, it.text)
-                    },
-                    label = { Text("Aisle (selected store)") },
-                    modifier = Modifier
-                        .weight(1f)
-                        .focusRequester(aisleFR),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    keyboardActions = KeyboardActions(onNext = { qtyFR.requestFocus() })
-                )
+                Box(modifier = Modifier.weight(1f)) {
+                    OutlinedTextField(
+                        value = aisleField,
+                        onValueChange = {
+                            aisleField = it
+                            viewModel.setAisleTypeahead(selectedStoreId, it.text)
+                        },
+                        label = { Text("Aisle (selected store)") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(aisleFR)
+                            .onFocusChanged { focusState ->
+                                if (focusState.isFocused) {
+                                    aisleDropdownOpen = true
+                                    viewModel.setAisleTypeahead(selectedStoreId, aisleField.text)
+                                } else {
+                                    aisleDropdownOpen = false
+                                    viewModel.setAisleTypeahead(selectedStoreId, "")
+                                }
+                            },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        keyboardActions = KeyboardActions(onNext = { qtyFR.requestFocus() })
+                    )
+                    DropdownMenu(
+                        expanded = aisleDropdownOpen && aisleSugs.isNotEmpty(),
+                        onDismissRequest = { aisleDropdownOpen = false },
+                        properties = PopupProperties(focusable = false)
+                    ) {
+                        aisleSugs.forEach { a ->
+                            DropdownMenuItem(
+                                text = { Text(a) },
+                                onClick = {
+                                    aisleField = TextFieldValue(
+                                        a,
+                                        selection = TextRange(a.length, a.length)
+                                    )
+                                    aisleDropdownOpen = false
+                                    viewModel.setAisleTypeahead(selectedStoreId, "")
+                                }
+                            )
+                        }
+                    }
+                }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Checkbox(
                         checked = applyAisleToAllStores,
                         onCheckedChange = { applyAisleToAllStores = it }
                     )
                     Text("All stores", style = MaterialTheme.typography.labelSmall)
-                }
-            }
-
-            val aisleSugs = uiState.aisleSuggestions
-
-            DropdownMenu(
-                expanded = aisleSugs.isNotEmpty() && aisleField.text.trim().length >= 2,
-                onDismissRequest = { viewModel.setAisleTypeahead(selectedStoreId, "") },
-                modifier = Modifier.fillMaxWidth(),
-                properties = PopupProperties(focusable = false)
-            ) {
-                aisleSugs.forEach { a ->
-                    DropdownMenuItem(
-                        text = { Text(a) },
-                        onClick = {
-                            aisleField = TextFieldValue(
-                                a,
-                                selection = TextRange(a.length, a.length)
-                            )
-                            viewModel.setAisleTypeahead(selectedStoreId, "")
-                        }
-                    )
                 }
             }
 
@@ -1370,8 +1320,8 @@ fun EditItemScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Checkbox(
-                        checked = showIfAisleUnassigned,
-                        onCheckedChange = { showIfAisleUnassigned = it }
+                        checked = isStoreSpecific,
+                        onCheckedChange = { isStoreSpecific = it }
                     )
                     Text(
                         "Store-specific item",
@@ -1422,7 +1372,7 @@ fun EditItemScreen(
                             item = updated,
                             storeId = selectedStoreId!!,
                             aisle = aisleField.text,
-                            showIfAisleUnassigned = showIfAisleUnassigned,
+                            isStoreSpecific = isStoreSpecific,
                             priceOverrideCents = storePriceCentsParsed,
                             applyAisleToAllStores = applyAisleToAllStores
                         )

@@ -34,60 +34,42 @@ class ShoppingRepository(private val dao: ShoppingDao) {
 
     // ---------- Home list (Active list) ----------
 
-    fun observeActiveListForStore(storeId: Long): Flow<List<ShoppingDao.ListEntryRow>> =
-        dao.observeListEntriesForStore(storeId)
+    fun observeActiveListForStore(storeId: Long, filterByStore: Boolean): Flow<List<ShoppingDao.ListEntryRow>> =
+        dao.observeListEntriesForStore(storeId, filterByStore)
 
     suspend fun addItemByNameToStoreAndList(name: String, storeId: Long, aisle: String? = null) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
 
-        // 1) Find or create the item in the global catalog
         val existing = dao.getItemByExactName(trimmed)
         val itemId = if (existing != null) {
             existing.id
         } else {
             val newId = dao.insertItem(Item(name = trimmed))
-            if (newId > 0) newId else (dao.getItemIdByName(trimmed) ?: return)
+            if (newId > 0) newId else (dao.getItemByExactName(trimmed)?.id ?: return)
         }
 
-        // 2) FORCE the link to the store.
-        // This fixes the 'Invisible Item' bug caused by the INNER JOIN in the DAO.
         dao.upsertStoreItem(
             StoreItem(
                 storeId = storeId,
                 itemId = itemId,
                 aisle = aisle?.trim()?.takeIf { it.isNotEmpty() },
-                showIfAisleUnassigned = true,
+                isStoreSpecific = false,
                 priceOverrideCents = null
             )
         )
 
-        // 3) Add to the shopping list or make sure it is visible (un-checked)
         val currentEntryId = dao.getListEntryIdByItemId(itemId)
         if (currentEntryId == null) {
-            dao.insertListEntry(
-                ListEntry(
-                    itemId = itemId,
-                    checkedInCart = false
-                )
-            )
+            dao.insertListEntry(ListEntry(itemId = itemId, checkedInCart = false))
         } else {
-            // If it exists but was hidden (checked), show it again.
             dao.updateListEntryChecked(itemId, false)
         }
     }
+
     suspend fun addToActiveListByItemId(itemId: Long) {
         if (dao.getListEntryIdByItemId(itemId) == null) {
-            dao.insertListEntry(
-                ListEntry(
-                    itemId = itemId,
-                    checkedInCart = false,
-                    qtyToBuy = null,
-                    unit = null,
-                    size = null,
-                    priceOverrideCents = null
-                )
-            )
+            dao.insertListEntry(ListEntry(itemId = itemId, checkedInCart = false))
         }
     }
 
@@ -103,18 +85,14 @@ class ShoppingRepository(private val dao: ShoppingDao) {
         dao.setQtyToBuy(itemId, qtyToBuy)
     }
 
-    suspend fun clearInCartForStore(storeId: Long) {
-        dao.clearInCartForStore(storeId)
+    suspend fun clearAllInCart() {
+        dao.clearAllInCart()
     }
 
     // ---------- Picklist ----------
 
-    fun observePicklistForStore(storeId: Long, query: String): Flow<List<ShoppingDao.PicklistItemRow>> =
-        dao.observePicklistForStore(storeId, query)
-
-    fun observeAllItems(): Flow<List<Item>> = dao.observeAllItems()
-
-    fun searchItems(query: String): Flow<List<Item>> = dao.searchItems(query)
+    fun observePicklistForStore(storeId: Long, query: String, filterByStore: Boolean): Flow<List<ShoppingDao.PicklistItemRow>> =
+        dao.observePicklistForStore(storeId, query, filterByStore)
 
     suspend fun deleteCatalogItem(itemId: Long) {
         dao.deleteItemById(itemId)
@@ -130,7 +108,7 @@ class ShoppingRepository(private val dao: ShoppingDao) {
     suspend fun upsertItem(item: Item): Long {
         return if (item.id == 0L) {
             val inserted = dao.insertItem(item)
-            if (inserted > 0) inserted else (dao.getItemIdByName(item.name) ?: -1L)
+            if (inserted > 0) inserted else (dao.getItemByExactName(item.name)?.id ?: -1L)
         } else {
             dao.updateItem(item)
             item.id
@@ -141,33 +119,33 @@ class ShoppingRepository(private val dao: ShoppingDao) {
         item: Item,
         storeId: Long,
         aisle: String?,
-        showIfAisleUnassigned: Boolean,
+        isStoreSpecific: Boolean,
         priceOverrideCents: Int?,
         applyAisleToAllStores: Boolean = false
     ) {
         val cleanAisle = aisle?.trim()?.ifEmpty { null }
         upsertItem(item)
-        dao.upsertStoreItem(
-            StoreItem(
-                storeId = storeId,
-                itemId = item.id,
-                aisle = cleanAisle,
-                showIfAisleUnassigned = showIfAisleUnassigned,
-                priceOverrideCents = priceOverrideCents
-            )
-        )
+
         if (applyAisleToAllStores) {
-            // Update aisle on stores that already have a record
             dao.updateAisleForAllStores(item.id, cleanAisle)
-            // Create records for stores that don't have one yet
-            val allStores = dao.getStoresOnce()
             val existingStoreIds = dao.getStoreItemsForItemOnce(item.id).map { it.storeId }.toSet()
-            allStores.forEach { store ->
+            dao.getStoresOnce().forEach { store ->
                 if (store.id !in existingStoreIds) {
                     dao.upsertStoreItem(StoreItem(storeId = store.id, itemId = item.id, aisle = cleanAisle))
                 }
             }
         }
+
+        // Always write selected store with full details (price + isStoreSpecific)
+        dao.upsertStoreItem(
+            StoreItem(
+                storeId = storeId,
+                itemId = item.id,
+                aisle = cleanAisle,
+                isStoreSpecific = isStoreSpecific,
+                priceOverrideCents = priceOverrideCents
+            )
+        )
     }
 
     // ---------- Typeahead helpers ----------
@@ -209,7 +187,7 @@ class ShoppingRepository(private val dao: ShoppingDao) {
                 a.put("storeName", store.name)
                 if (si.aisle != null) a.put("aisle", si.aisle)
                 if (si.priceOverrideCents != null) a.put("priceOverrideCents", si.priceOverrideCents)
-                a.put("showIfAisleUnassigned", si.showIfAisleUnassigned)
+                a.put("showIfAisleUnassigned", si.isStoreSpecific)
                 assignments.put(a)
             }
             obj.put("storeAssignments", assignments)
@@ -245,7 +223,7 @@ class ShoppingRepository(private val dao: ShoppingDao) {
                     notes = if (obj.has("notes")) obj.getString("notes") else null
                 )
                 val id = dao.insertItem(newItem)
-                if (id > 0) id else (dao.getItemIdByName(name) ?: continue)
+                if (id > 0) id else (dao.getItemByExactName(name)?.id ?: continue)
             }
 
             val assignments = obj.optJSONArray("storeAssignments")
@@ -259,7 +237,7 @@ class ShoppingRepository(private val dao: ShoppingDao) {
                             itemId = itemId,
                             aisle = if (a.has("aisle")) a.getString("aisle").ifEmpty { null } else null,
                             priceOverrideCents = if (a.has("priceOverrideCents")) a.getInt("priceOverrideCents") else null,
-                            showIfAisleUnassigned = a.optBoolean("showIfAisleUnassigned", true)
+                            isStoreSpecific = a.optBoolean("showIfAisleUnassigned", true)
                         )
                     )
                 }

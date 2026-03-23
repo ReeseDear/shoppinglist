@@ -9,7 +9,6 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ShoppingDao {
-
     // ---------- Items ----------
 
     @Query("DELETE FROM items WHERE id = :itemId")
@@ -18,17 +17,8 @@ interface ShoppingDao {
     @Query("SELECT * FROM items WHERE id = :itemId LIMIT 1")
     suspend fun getItemById(itemId: Long): Item?
 
-    @Query(
-        """
-        SELECT * FROM items
-        WHERE LOWER(name) = LOWER(:name)
-        LIMIT 1
-        """
-    )
+    @Query(```"SELECT * FROM items WHERE LOWER(name) = LOWER(:name) LIMIT 1")
     suspend fun getItemByExactName(name: String): Item?
-
-    @Query("SELECT id FROM items WHERE name = :name LIMIT 1")
-    suspend fun getItemIdByName(name: String): Long?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertItem(item: Item): Long
@@ -38,18 +28,6 @@ interface ShoppingDao {
 
     @Query("SELECT * FROM items ORDER BY name COLLATE NOCASE")
     suspend fun getAllItemsOnce(): List<Item>
-
-    @Query("SELECT * FROM items ORDER BY name COLLATE NOCASE")
-    fun observeAllItems(): Flow<List<Item>>
-
-    @Query(
-        """
-        SELECT * FROM items
-        WHERE name LIKE '%' || :query || '%'
-        ORDER BY name COLLATE NOCASE
-        """
-    )
-    fun searchItems(query: String): Flow<List<Item>>
 
     @Query(
         """
@@ -80,13 +58,7 @@ interface ShoppingDao {
 
     // ---------- StoreItems ----------
 
-    @Query(
-        """
-        SELECT * FROM store_items
-        WHERE storeId = :storeId AND itemId = :itemId
-        LIMIT 1
-        """
-    )
+    @Query("SELECT * FROM store_items WHERE storeId = :storeId AND itemId = :itemId LIMIT 1")
     suspend fun getStoreItem(storeId: Long, itemId: Long): StoreItem?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -128,8 +100,7 @@ interface ShoppingDao {
             i.name AS name,
             si.aisle AS aisle,
             si.priceOverrideCents AS priceOverrideCents,
-            CASE WHEN le.id IS NULL THEN 0 ELSE 1 END AS inCart,
-            si.createdAtEpochMs AS createdAt
+            CASE WHEN le.id IS NULL THEN 0 ELSE 1 END AS inCart
         FROM store_items si
         INNER JOIN items i ON i.id = si.itemId
         LEFT JOIN list_entries le ON le.itemId = si.itemId
@@ -155,30 +126,15 @@ interface ShoppingDao {
     @Query("UPDATE list_entries SET checkedInCart = CASE WHEN checkedInCart = 1 THEN 0 ELSE 1 END WHERE itemId = :itemId")
     suspend fun toggleCheckedInCart(itemId: Long)
 
-    // ADDED THIS FUNCTION TO FIX UNRESOLVED REFERENCE
     @Query("UPDATE list_entries SET checkedInCart = :checked WHERE itemId = :itemId")
     suspend fun updateListEntryChecked(itemId: Long, checked: Boolean)
 
     @Query("DELETE FROM list_entries WHERE itemId = :itemId")
     suspend fun deleteListEntryByItemId(itemId: Long)
 
-    @Query(
-        """
-        DELETE FROM list_entries
-        WHERE checkedInCart = 1
-          AND itemId IN (
-            SELECT i.id
-            FROM items i
-            INNER JOIN store_items si ON si.itemId = i.id
-            WHERE si.storeId = :storeId
-          )
-        """
-    )
-    suspend fun clearInCartForStore(storeId: Long)
+    @Query("DELETE FROM list_entries WHERE checkedInCart = 1")
+    suspend fun clearAllInCart()
 
-    /**
-     * Row model for the Home list
-     */
     data class ListEntryRow(
         val listEntryId: Long,
         val itemId: Long,
@@ -220,7 +176,8 @@ interface ShoppingDao {
         LEFT JOIN store_items si
             ON si.itemId = i.id AND si.storeId = :storeId
         WHERE (
-            NOT EXISTS (
+            :filterByStore = 0
+            OR NOT EXISTS (
                 SELECT 1 FROM store_items si2
                 WHERE si2.itemId = i.id AND si2.showIfAisleUnassigned = 1
             )
@@ -231,11 +188,10 @@ interface ShoppingDao {
         )
         ORDER BY
             COALESCE(NULLIF(si.aisle, ''), 'ZZZ') COLLATE NOCASE ASC,
-            i.name COLLATE NOCASE ASC,
-            le.createdAtEpochMs DESC
+            i.name COLLATE NOCASE ASC
         """
     )
-    fun observeListEntriesForStore(storeId: Long): Flow<List<ListEntryRow>>
+    fun observeListEntriesForStore(storeId: Long, filterByStore: Boolean): Flow<List<ListEntryRow>>
 
     // ---------- Picklist rows ----------
 
@@ -258,11 +214,24 @@ interface ShoppingDao {
         FROM items i
         LEFT JOIN store_items si
             ON si.itemId = i.id AND si.storeId = :storeId
-        WHERE (:query = '' OR i.name LIKE '%' || :query || '%')
+        WHERE (
+            :query = '' OR i.name LIKE '%' || :query || '%'
+        )
+        AND (
+            :filterByStore = 0
+            OR NOT EXISTS (
+                SELECT 1 FROM store_items si2
+                WHERE si2.itemId = i.id AND si2.showIfAisleUnassigned = 1
+            )
+            OR EXISTS (
+                SELECT 1 FROM store_items si2
+                WHERE si2.itemId = i.id AND si2.showIfAisleUnassigned = 1 AND si2.storeId = :storeId
+            )
+        )
         ORDER BY
             COALESCE(NULLIF(si.aisle, ''), 'ZZZ') COLLATE NOCASE ASC,
             i.name COLLATE NOCASE ASC
         """
     )
-    fun observePicklistForStore(storeId: Long, query: String): Flow<List<PicklistItemRow>>
+    fun observePicklistForStore(storeId: Long, query: String, filterByStore: Boolean): Flow<List<PicklistItemRow>>
 }

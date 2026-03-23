@@ -1,5 +1,6 @@
 package com.reese.shoppinglist.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -32,9 +33,8 @@ data class StoreItem(
 
     val aisle: String? = null,
 
-    // Per-store override (optional)
     val priceOverrideCents: Int? = null,
-    val showIfAisleUnassigned: Boolean = false,
+    @ColumnInfo(name = "showIfAisleUnassigned") val isStoreSpecific: Boolean = false,
 
     val createdAtEpochMs: Long = System.currentTimeMillis(),
     val updatedAtEpochMs: Long = System.currentTimeMillis()

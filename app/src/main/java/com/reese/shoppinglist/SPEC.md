@@ -15,12 +15,19 @@ If code behavior conflicts with this file, **this file wins**.
 ---
 
 ## 3. Visibility Rules
-- The shopping list always displays all active list items.
-- Items are never hidden due to store selection.
-- Store selection only affects:
-    - sorting
-    - price selection
-    - aisle labeling
+- By default the shopping list displays all active list items regardless of store.
+- Store selection affects sorting, price selection, and aisle labeling.
+- A **"This store's items only"** filter toggle on the home screen restricts visibility:
+    - When ON: only items that are **universal** (not flagged store-specific anywhere) OR **store-specific to the current store** are shown.
+    - Items flagged store-specific for a *different* store are hidden.
+    - This filter applies to both the home list and the picklist.
+    - Filter state persists across sessions (saved to DataStore).
+
+### 3.1 Store-Specific Items
+- `StoreItem.isStoreSpecific` (DB column: `showIfAisleUnassigned`) marks an item as belonging to a specific store.
+- Items added from the home screen are **universal by default** (`isStoreSpecific = false`).
+- Users explicitly mark items as store-specific via the "Store-specific item" checkbox in Edit Item.
+- When `isStoreSpecific = true` and the store-specific filter is ON, the item only appears when its store is active.
 
 ---
 
@@ -46,6 +53,7 @@ Each Store has:
 Defines store-specific overrides:
 - storeId
 - itemId
+- isStoreSpecific (Boolean, default false) — marks item as belonging only to this store
 - Optional:
     - aisle
     - priceOverride
@@ -81,11 +89,9 @@ If no Active Store:
 When calculating price per item:
 - If Active Store is selected AND `priceOverride` exists → use it
 - Else if `defaultPrice` exists → use it
-- Else → price = `0.00`
+- Else → price = `0.00` (unpriced items contribute $0.00 to the total)
 
-Missing prices:
-- May be flagged in UI
-- Must not block checkout
+Checkout clears **all** items currently in the cart regardless of store or price.
 
 ---
 
@@ -145,16 +151,15 @@ Each list item row includes:
 ### 7.4 Edit Item Screen
 This is the **only place** where optional data is edited.
 
-Edit screen must support:
-- Editing item defaults:
-    - default price
-    - size
-    - default quantity
-- Displaying all stores with checkboxes
-
-When a store is checked:
-- Allow aisle input
-- Allow store-specific price override
+Edit screen supports:
+- Item name
+- Store price override (selected store)
+- Aisle (selected store) — tapping the field opens a dropdown of all existing aisles; typing filters the list
+- "All stores" checkbox — applies the aisle to every store
+- Default quantity, unit, size, default price, notes
+- "Active" checkbox
+- "Store-specific item" checkbox — marks the item as belonging only to the selected store
+- Store switcher in the top bar to view/edit overrides for each store
 
 ---
 
@@ -174,10 +179,11 @@ Purpose: selecting **multiple existing items** in one session.
 ---
 
 ## 9. Checkout Behavior
-- Checkout totals items using price rules in Section 6
+- Checkout totals all in-cart items using price rules in Section 6
+- Unpriced items contribute $0.00 to the total
 - On confirmation:
-    - Remove purchased items from the active list
-    - No automatic deletion of Items from database
+    - All items currently in the cart are removed from the active list
+    - No automatic deletion of Items from the database
 
 ---
 

@@ -32,6 +32,11 @@ abstract class ShoppingDatabase : RoomDatabase() {
             }
         }
 
+        // No schema changes between 4 and 5
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) { }
+        }
+
         // Repurposes showIfAisleUnassigned to mean "store-specific item"; reset all existing to 0
         private val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -46,7 +51,7 @@ abstract class ShoppingDatabase : RoomDatabase() {
                     ShoppingDatabase::class.java,
                     "shopping_database"
                 )
-                    .addMigrations(MIGRATION_3_4, MIGRATION_5_6)
+                    .addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                     .build()
 
                 INSTANCE = instance
